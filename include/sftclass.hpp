@@ -1,3 +1,5 @@
+#pragma once
+
 #include <string_view>
 #include <string>
 #include <format>
@@ -81,14 +83,17 @@ class sft_header {
 				break;
 			}
 		}
-		string form_discover_header(string_view host, uint16_t port) {
+		template<typename StringT = string>
+		string form_discover_header(const StringT& host, uint16_t port) {
 			return format("{}DIS/{}/{}\r\n", message, host, port);
 		}
-		string form_respond_header(string_view host, uint16_t port) {
+		template<typename StringT = string>
+		string form_respond_header(const StringT& host, uint16_t port) {
 			return format("{}RES/{}/{}\r\n", message, host, port);
 		}
-		string form_file_header(string_view file, size_t size) {
-			return format("{}FIL/{}/{}\r\n", message, file, size);
+		template<typename StringT = string>
+		string form_file_header(const StringT& file, size_t size) {
+			return format("{0}FIL/{1}/{2}\r\n", message, file, size);
 		}
 		size_t size() {
 			return message.size();

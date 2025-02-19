@@ -2,20 +2,9 @@
 #define IO_HPP
 #include <stdexcept>
 #include <fstream>
-#ifdef _WIN32
-#include <filesystem>
-#include <WinSock2.h>
-#include <io.h>
-#include <cerrno>
-using ssize_t = SSIZE_T;
-using socklen_t = int;
-#else
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <dirent.h>
-#endif // 
 #include <fcntl.h>
 #include <format>
+#include <filesystem>
 #ifdef __cpp_lib_expected
 #include <expected>
 using std::expected;
@@ -25,202 +14,238 @@ using tl::expected;
 using tl::unexpected;
 #endif // __cpp_lib_expected
 #include "util.hpp"
-#define RETBAD return unexpected(std::errc(errno));
+#ifdef _WIN32
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <io.h>
+#include <fileapi.h>
+#pragma comment(lib, "ws2_32.lib")
+#define sockclose(s) ::closesocket(s)
+#define sockerrno    GetLastError()
+#define perror(str)  cout << str << ": " << get_winsock_error_str() << endl
+extern std::string get_winsock_error_str(int errcode = 0);
+using socklen_t = int;
+using optval_t  = char;
+using ssize_t   = signed long long;
+#else
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <dirent.h>
+#define sockclose(s)         ::close(s)
+#define sockread(...)        ::read(__VA_ARGS__)
+#define sockwrite(...)       ::write(__VA_ARGS__)
+#define sockerrno            errno
+#define INVALID_SOCKET       -1
+#define SOCKET_ERROR         -1
+#define INVALID_HANDLE_VALUE -1
+using SOCKET    = int;
+using optval_t  = int;
+using HANDLE    = int;
+#endif //
 
-using std::out_of_range;
-using std::runtime_error;
+namespace mfcslib {
 using std::string;
 using namespace std::filesystem;
-using Byte = char;
 using string_type = path::string_type;
-namespace mfcslib {
-	enum {
-		RDONLY,
-		WRONLY,
-		RDWR
-	};
-	class basic_io {
-	protected:
-		using _ResType = expected<int, std::errc>;
+#ifdef _WIN32
+using _ResType  = int;
+using _SizeType = unsigned long;
+#else
+using _ResType  = ssize_t;
+using _SizeType = size_t;
+#endif
 
+template <bool isSocket = false> class basic_io {
+	protected:
+#ifdef _WIN32
+		size_t _fd = -1;
+#else
+		int _fd = -1;
+#endif
+
+	public:
 		basic_io() = default;
 		~basic_io() {
-			::close(_fd);
+			this->close();
 		}
 
-	public:
-		auto read(Byte* charc) {
-			auto ret = ::read(_fd, charc, 1);
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
-		}
-		auto read(Byte* buf, size_t nbytes) {
+		ssize_t read(Byte* buf, _SizeType nbytes) {
+#ifdef _WIN32
+			if constexpr (isSocket) {
+				auto ret = ::recv(_fd, buf, nbytes, 0);
+				return ret;
+			}
+			else {
+				_SizeType bytes_read = 0;
+				bool      success =
+					ReadFile((HANDLE)_fd, buf, nbytes, &bytes_read, NULL);
+				return success ? bytes_read : -1;
+			}
+#else
 			auto ret = ::read(_fd, buf, nbytes);
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
 			return ret;
+#endif
 		}
-		auto read(TypeArray<Byte>& buf) const {
-			auto ret = ::read(_fd, buf.get_ptr(), buf.length());
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
+		Byte read_byte() {
+			Byte charc = -1;
+			this->read(&charc, 1);
+			return charc;
 		}
-		auto read(TypeArray<Byte>& buf, size_t pos, size_t sz) {
+		ssize_t read(TypeArray<Byte>& buf, _SizeType pos, _SizeType sz) {
+#ifdef DEBUG
 			auto len = buf.length();
 			if (pos >= len || sz > len || pos + sz > len)
-				throw out_of_range("In read, pos or sz is out of range.");
-			auto ret = ::read(_fd, buf.get_ptr() + pos, sz);
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
+				throw std::out_of_range("In read, pos or sz is out of range.");
+#endif // DEBUG
+			return this->read(buf.get_ptr() + pos, sz);
+		}
+		ssize_t read(TypeArray<Byte>& buf) {
+			return this->read(buf, 0, buf.length());
+		}
+
+		// Returns the number of bytes have been written, -1 if fails.
+		ssize_t write(const Byte* buf, _SizeType nbytes) {
+#ifdef _WIN32
+			if constexpr (isSocket) {
+				auto ret = ::send(_fd, buf, nbytes, 0);
+				return ret;
+			}
+			else {
+				_SizeType bytes_written = 0;
+				bool      success =
+					WriteFile((HANDLE)_fd, buf, nbytes, &bytes_written, NULL);
+				return success ? bytes_written : -1;
+			}
+#else
+			auto ret = ::write(_fd, buf, nbytes);
 			return ret;
+#endif
+		}
+		auto write(TypeArray<Byte>& buf, _SizeType pos, _SizeType sz) {
+#ifdef DEBUG
+			auto len = buf.length();
+			if (pos >= len || sz > len || pos + sz > len)
+				throw std::out_of_range("In write, pos or sz is out of range.");
+#endif // DEBUG
+			return this->write(buf.get_ptr() + pos, sz);
 		}
 		auto write(TypeArray<Byte>& buf) {
-			auto ret = ::write(_fd, buf.get_ptr(), buf.length());
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
-		}
-		auto write(TypeArray<Byte>& buf, size_t pos, size_t sz) {
-			auto len = buf.length();
-			if (pos >= len || sz > len || pos + sz > len)
-				throw out_of_range("In write, pos or sz is out of range.");
-			auto ret = ::write(_fd, buf.get_ptr() + pos, sz);
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
+			return this->write(buf, 0, buf.length());
 		}
 		auto write(const std::string_view& buf) {
-			auto ret = ::write(_fd, buf.data(), buf.length());
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
+			return this->write(buf.data(), buf.length());
 		}
-		auto write(char c) {
-			auto ret = ::write(_fd, &c, 1);
-			if (ret < 0 && errno != EAGAIN)
-				throw IO_exception(strerror(errno));
-			return ret;
+		auto write_byte(Byte c) {
+			return this->write(&c, 1);
 		}
 		void close() {
-			::close(_fd);
-			_fd = -1;
+			if (_fd != -1) {
+#ifdef _WIN32
+				if constexpr (isSocket) {
+					::closesocket(SOCKET(_fd));
+				}
+				else {
+					CloseHandle((HANDLE)_fd);
+				}
+				_fd = -1;
+#else
+				::close(_fd);
+				_fd = -1;
+#endif
+			}
 		}
-		auto get_fd() const {
-			return _fd;
-		}
-		auto available() const {
-			return _fd != -1;
-		}
-		auto set_nonblocking() {
-			int old_option = fcntl(_fd, F_GETFL);
-			int new_option = old_option | O_NONBLOCK;
-			fcntl(_fd, F_SETFL, new_option);
-			return old_option;
-		}
+};
 
-	protected:
-		int _fd = -1;
-	};
-
-	class File : public basic_io {
+class File : public basic_io<false> {
 	public:
-		File() = default;
+		enum iomode {
+			RDONLY,
+			WRONLY,
+			RDWR
+		};
+
+		File()            = default;
 		File(const File&) = delete;
 		File(const string_type& path) : _file_path(path) {
 		}
 		File(File&& other) {
-			this->_fd = other._fd;
-			this->_file_path = other._file_path;
-			other._file_path.clear();
-			other._fd = -1;
+			this->close();
+			this->_fd        = other._fd;
+			this->_file_path = std::move(other._file_path);
+			other._fd        = -1;
 		}
-		~File() {
+		~File() = default;
+
+		void operator=(const string_type& path) {
+			_file_path = path;
+			this->close();
+		}
+		// Returns true for success, false if fails
+		bool open(const string_type& path, bool trunc = false,
+				  int rwmode = RDWR) {
+#ifdef _WIN32
+			DWORD DesiredAccess       = 0,
+				  CreationDisposition = trunc ? CREATE_ALWAYS : OPEN_ALWAYS;
+			if (rwmode == RDONLY) {
+				DesiredAccess = FILE_GENERIC_READ;
+			}
+			else if (rwmode == WRONLY) {
+				DesiredAccess = FILE_GENERIC_WRITE;
+				if (!trunc) {
+					DesiredAccess = FILE_APPEND_DATA | FILE_GENERIC_READ;
+				}
+			}
+			else {
+				DesiredAccess = FILE_GENERIC_READ | FILE_GENERIC_WRITE;
+				if (!trunc) {
+					DesiredAccess = FILE_APPEND_DATA | FILE_GENERIC_READ;
+				}
+			}
+			_fd = (size_t)CreateFile2(path.c_str(), DesiredAccess, 0,
+									  CreationDisposition, NULL);
+#else
+			int flag = 0;
+			switch (rwmode) {
+			case 0:
+				flag |= O_RDONLY;
+				break;
+			case 1:
+				flag |= O_WRONLY | O_CREAT;
+				break;
+			default:
+				flag |= O_RDWR | O_CREAT;
+				break;
+			}
+			if (trunc)
+				flag |= O_TRUNC;
+			else
+				flag |= O_APPEND;
+			_fd            = ::open(path.c_str(), flag, 0644);
+#endif
+			if (_fd == -1) {
+				return false;
+			}
+			_file_path = path;
+			return true;
+		}
+		bool open(bool trunc = false, int rwmode = RDWR) {
+			return this->open(_file_path, trunc, rwmode);
+		}
+		[[nodiscard]] bool open_read_only() {
+			return this->open(_file_path, false, RDONLY);
 		}
 
-		void operator=(const string& path) {
-			_file_path = path;
+		bool is_exist() const {
+			return exists(_file_path);
 		}
-		auto open(const string& path, bool trunc, int rwmode) {
-			int flag = 0;
-			switch (rwmode) {
-			case 0:
-				flag |= O_RDONLY;
-				break;
-			case 1:
-				flag |= O_WRONLY | O_CREAT;
-				break;
-			default:
-				flag |= O_RDWR | O_CREAT;
-				break;
-			}
-			if (trunc)
-				flag |= O_TRUNC;
-			else
-				flag |= O_APPEND;
-			_fd = ::open(path.c_str(), flag, 0644);
-			if (_fd < 0)
-				throw file_exception(strerror(errno));
-			fstat(_fd, &_file_stat);
-			if (!S_ISREG(_file_stat.st_mode)) {
-				::close(_fd);
-				throw std::invalid_argument(
-					std::format("'{}' is not a regular file!\n", path));
-			}
-			_file_path = _get_path_from_fd(_fd);
-			return _fd;
-		}
-		auto open(bool trunc, int rwmode) {
-			int flag = 0;
-			switch (rwmode) {
-			case 0:
-				flag |= O_RDONLY;
-				break;
-			case 1:
-				flag |= O_WRONLY | O_CREAT;
-				break;
-			default:
-				flag |= O_RDWR | O_CREAT;
-				break;
-			}
-			if (trunc)
-				flag |= O_TRUNC;
-			else
-				flag |= O_APPEND;
-			_fd = ::open(_file_path.c_str(), flag, 0644);
-			if (_fd < 0)
-				throw file_exception(strerror(errno));
-			fstat(_fd, &_file_stat);
-			if (!S_ISREG(_file_stat.st_mode)) {
-				::close(_fd);
-				throw std::invalid_argument(
-					std::format("'{}' is not a regular file!\n", _file_path));
-			}
-			_file_path = _get_path_from_fd(_fd);
-			return _fd;
-		}
-		auto open_read_only() {
-			_fd = ::open(_file_path.c_str(), O_RDONLY);
-			if (_fd < 0)
-				throw std::runtime_error(strerror(errno));
-			fstat(_fd, &_file_stat);
-			if (!S_ISREG(_file_stat.st_mode)) {
-				::close(_fd);
-				throw std::invalid_argument(
-					std::format("'{}' is not a regular file!\n", _file_path));
-			}
-			_file_path = _get_path_from_fd(_fd);
-			return _fd;
-		}
-		bool is_existing() const {
-			return _fd > 0;
+		bool is_open() const {
+			return _fd != -1;
 		}
 		std::uintmax_t size() const {
 			return file_size(_file_path);
 		}
 		string size_string() const {
-			return to_string(file_size(_file_path));
+			return std::to_string(file_size(_file_path));
 		}
 		path::string_type get_parent() {
 			return _file_path.parent_path();
@@ -234,142 +259,40 @@ namespace mfcslib {
 		path::string_type get_type() {
 			return _file_path.extension().c_str();
 		}
+		size_t get_fd() {
+			return _fd;
+		}
 		auto get_last_modified_time() const {
 			return last_write_time(_file_path);
 		}
 
 	private:
-		path      _file_path;
-	};
+		path _file_path;
+};
 
-	class NetworkSocket : public basic_io {
+class raw_socket : public basic_io<true> {
 	public:
-		NetworkSocket() = default;
-		NetworkSocket(const NetworkSocket&) = delete;
-		NetworkSocket(NetworkSocket&& other) noexcept {
-			this->_fd = other._fd;
-			other._fd = -1;
-			this->ip_port = other.ip_port;
-			::memset(&other.ip_port, 0, sizeof(other.ip_port));
-		}
-		NetworkSocket(int fd, const sockaddr_in& addr_info) {
-			_fd = fd;
-			ip_port = addr_info;
-		}
-		NetworkSocket(const string& ip, uint16_t port) {
-			memset(&ip_port, 0, sizeof ip_port);
-			ip_port.sin_family = AF_INET;
-			ip_port.sin_addr.s_addr = inet_addr(ip.c_str());
-			if (ip_port.sin_addr.s_addr == INADDR_NONE) {
-				throw std::invalid_argument("Invalid address:");
-			}
-			ip_port.sin_port = htons(port);
-			_fd = socket(AF_INET, SOCK_STREAM, 0);
-			int ret = connect(_fd, (struct sockaddr*)&ip_port, sizeof(ip_port));
-			if (ret < 0) {
-				string error_msg = "Can not connect: ";
-				error_msg += strerror(errno);
-				throw socket_exception(error_msg);
-			}
-		}
-		in_addr get_ip() {
-			return ip_port.sin_addr;
-		}
-		std::string get_ip_s() {
-			return inet_ntoa(ip_port.sin_addr);
-		}
-		auto get_port() {
-			return ntohs(ip_port.sin_port);
-		}
-		std::string get_port_s() {
-			return std::to_string(ntohs(ip_port.sin_port));
-		}
-		std::string get_ip_port_s() {
-			return get_ip_s() + ':' + get_port_s();
-		}
-		~NetworkSocket() {
-		}
-
-		mfcslib::NetworkSocket& operator=(mfcslib::NetworkSocket&& other) {
-			this->_fd = other._fd;
-			other._fd = -1;
-			this->ip_port = other.ip_port;
-			::memset(&other.ip_port, 0, sizeof(other.ip_port));
-			return *this;
-		}
-
-	protected:
-		sockaddr_in ip_port;
-	};
-
-	class ServerSocket : public NetworkSocket {
-	public:
-		ServerSocket() = delete;
-		ServerSocket(const ServerSocket&) = delete;
-		ServerSocket(ServerSocket&& other) noexcept {
-			this->_fd = other._fd;
-			other._fd = -1;
-			this->ip_port = other.ip_port;
-			::memset(&other.ip_port, 0, sizeof(other.ip_port));
-		}
-		ServerSocket(uint16_t port) {
-			memset(&ip_port, 0, sizeof ip_port);
-			ip_port.sin_family = AF_INET;
-			ip_port.sin_addr.s_addr = htonl(INADDR_ANY);
-			ip_port.sin_port = htons(port);
-			_fd = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
-			if (_fd <= 0) {
-				throw socket_exception(strerror(errno));
-			}
-			int flag = 1;
-			setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-			int ret = ::bind(_fd, (sockaddr*)&ip_port, sizeof(ip_port));
-			if (ret < 0) {
-				throw socket_exception(strerror(errno));
-			}
-			auto rett = ::listen(_fd, 5);
-			if (rett < 0) {
-				throw socket_exception(strerror(errno));
-			}
-		}
-		NetworkSocket accpet() {
-			sockaddr_in addrs{};
-			socklen_t   len = sizeof addrs;
-			auto        ret = ::accept(_fd, (sockaddr*)&addrs, &len);
-			if (ret < 0) {
-				if (errno != EAGAIN)
-					throw socket_exception(strerror(errno));
-				else
-					return {};
-			}
-			return NetworkSocket(ret, addrs);
-		}
-		~ServerSocket() {
-		}
-	};
-
-	class raw_socket : public basic_io {
-	public:
-		raw_socket() = default;
+		raw_socket()                  = default;
 		raw_socket(const raw_socket&) = delete;
 		raw_socket(raw_socket&& other) noexcept {
-			this->_fd = other._fd;
-			other._fd = -1;
+			this->_fd      = other._fd;
+			other._fd      = -1;
 			this->_ip_port = other._ip_port;
 			::memset(&other._ip_port, 0, sizeof(other._ip_port));
 		}
 		raw_socket(int fd, const sockaddr_in& addr_info) {
-			_fd = fd;
+			_fd      = fd;
 			_ip_port = addr_info;
 		}
 
 		// Initialize the socket, returns 0 on success, -1 if fails.
+		// Make sure to invoke WSAStartup() first on windows.
 		int initialize(int domain, int type, int protocol) {
-			if (_fd == -1) {
+			if (_fd == INVALID_SOCKET) {
 				::memset(&_ip_port, 0, sizeof(_ip_port));
 				_ip_port.sin_family = domain;
-				_fd = ::socket(domain, type, protocol);
-				return _fd > 0 ? 0 : -1;
+				_fd                 = ::socket(domain, type, protocol);
+				return _fd == SOCKET_ERROR ? -1 : 0;
 			}
 			return 0;
 		}
@@ -377,46 +300,79 @@ namespace mfcslib {
 			return ::bind(_fd, (const sockaddr*)&_ip_port, sizeof(_ip_port));
 		}
 		int bind(const struct sockaddr* addr, socklen_t len) {
-			memcpy(&_ip_port, addr, sizeof(_ip_port));
-			return ::bind(_fd, addr, len);
+			memcpy(&_ip_port, addr, len);
+			return this->bind();
 		}
-		int setsockopt(int level, int option, const void* val, socklen_t len) {
+		int setsockopt(int level, int option, const optval_t* val,
+					   socklen_t len) {
 			return ::setsockopt(_fd, level, option, val, len);
 		}
 		mfcslib::raw_socket& operator=(mfcslib::raw_socket&& other) {
-			this->_fd = other._fd;
-			other._fd = -1;
+			this->_fd      = other._fd;
+			other._fd      = -1;
 			this->_ip_port = other._ip_port;
 			::memset(&other._ip_port, 0, sizeof(other._ip_port));
 			return *this;
 		}
 
+		SOCKET get_fd() const {
+			return _fd;
+		}
+		auto available() const {
+			return _fd != INVALID_SOCKET;
+		}
+		auto set_nonblocking() const {
+#ifdef _WIN32
+			int    ret = 0;
+			u_long op  = 1;
+			ret        = ioctlsocket(_fd, FIONBIO, &op);
+			return ret;
+#else
+			int old_option = fcntl(_fd, F_GETFL);
+			int new_option = old_option | O_NONBLOCK;
+			old_option     = fcntl(_fd, F_SETFL, new_option);
+			return old_option;
+#endif
+		}
+		auto set_blocking() const {
+#ifdef _WIN32
+			int    ret = 0;
+			u_long op  = 0;
+			ret        = ioctlsocket(_fd, FIONBIO, &op);
+			return ret;
+#else
+			int old_option = fcntl(_fd, F_GETFL);
+			int new_option = old_option & ~O_NONBLOCK;
+			old_option     = fcntl(_fd, F_SETFL, new_option);
+			return old_option;
+#endif
+		}
+
 	protected:
 		sockaddr_in _ip_port{};
-	};
+};
 
-	class tcp_socket : public raw_socket {
+class tcp_socket : public raw_socket {
 	public:
-		tcp_socket() = default;
+		tcp_socket()                  = default;
 		tcp_socket(const tcp_socket&) = delete;
 		tcp_socket(tcp_socket&& other) noexcept {
-			this->_fd = other._fd;
-			other._fd = -1;
+			this->_fd      = other._fd;
+			other._fd      = -1;
 			this->_ip_port = other._ip_port;
 			::memset(&other._ip_port, 0, sizeof(other._ip_port));
 		}
 		tcp_socket(int fd, const sockaddr_in& addr_info) {
-			_fd = fd;
+			_fd      = fd;
 			_ip_port = addr_info;
 		}
-		~tcp_socket() {
-		}
 
-		expected<int, std::errc> connect(std::string_view ip, uint16_t port) {
-			_ip_port.sin_addr.s_addr = inet_addr(ip.data());
+		// Returns -EINVAL for invalid argument, -1 if fails, 0 for success.
+		_ResType connect(std::string_view ip, uint16_t port) {
+			inet_pton(AF_INET, ip.data(), &_ip_port.sin_addr);
 			_ip_port.sin_port = htons(port);
 			if (_ip_port.sin_addr.s_addr == INADDR_NONE) {
-				return tl::unexpected(std::errc::invalid_argument);
+				return -EINVAL;
 			}
 			if (initialize(AF_INET, SOCK_STREAM, 0) < 0) {
 				goto bad;
@@ -428,17 +384,17 @@ namespace mfcslib {
 			return 0;
 
 		bad:
-			return tl::unexpected(std::errc(errno));
+			return SOCKET_ERROR;
 		}
 
-		expected<int, std::errc> listen(uint16_t port, int n = 5) {
-			int flag = 1;
+		_ResType listen(uint16_t port, int n = 5) {
+			optval_t flag = 1;
 
 			if (initialize(AF_INET, SOCK_STREAM, 0) < 0) {
-				return tl::unexpected(std::errc(errno));
+				goto bad;
 			}
 			_ip_port.sin_addr.s_addr = INADDR_ANY;
-			_ip_port.sin_port = htons(port);
+			_ip_port.sin_port        = htons(port);
 			setsockopt(SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
 			if (this->bind() < 0) {
 				goto bad;
@@ -449,17 +405,17 @@ namespace mfcslib {
 			return 0;
 
 		bad:
-			return tl::unexpected(std::errc(errno));
+			return SOCKET_ERROR;
 		}
 		// Make sure to invoke listen() before accept()
-		expected<tcp_socket, std::errc> accept() {
+		expected<tcp_socket, int> accept() {
 			sockaddr_in addrs{};
 			socklen_t   len = sizeof addrs;
 
 			memset(&addrs, 0, len);
 			auto ret = ::accept(_fd, (sockaddr*)&addrs, &len);
 			if (ret < 0) {
-				return tl::unexpected(std::errc(errno));
+				return tl::unexpected(sockerrno);
 			}
 			return tcp_socket(ret, addrs);
 		}
@@ -468,7 +424,8 @@ namespace mfcslib {
 			return _ip_port.sin_addr;
 		}
 		std::string get_ip_s() {
-			return inet_ntoa(_ip_port.sin_addr);
+			char buf[INET_ADDRSTRLEN];
+			return inet_ntop(AF_INET, &_ip_port.sin_addr, buf, INET_ADDRSTRLEN);
 		}
 		auto get_port() {
 			return ntohs(_ip_port.sin_port);
@@ -481,78 +438,77 @@ namespace mfcslib {
 		}
 
 		mfcslib::tcp_socket& operator=(mfcslib::tcp_socket&& other) {
-			this->_fd = other._fd;
-			other._fd = -1;
+			this->_fd      = other._fd;
+			other._fd      = -1;
 			this->_ip_port = other._ip_port;
 			::memset(&other._ip_port, 0, sizeof(other._ip_port));
 			return *this;
 		}
-	};
+};
 
-	class udp_socket : public raw_socket {
+class udp_socket : public raw_socket {
 	public:
-		udp_socket() = default;
+		udp_socket()                  = default;
 		udp_socket(const udp_socket&) = delete;
 		udp_socket(udp_socket&& other) {
-			this->_fd = other._fd;
-			other._fd = -1;
+			this->_fd      = other._fd;
+			other._fd      = -1;
 			this->_ip_port = other._ip_port;
 			::memset(&other._ip_port, 0, sizeof(other._ip_port));
 		}
 		~udp_socket() = default;
 
 		_ResType set_local_port(uint16_t port) {
-			int flag = 1;
+			optval_t flag = 1;
 
 			if (initialize(AF_INET, SOCK_DGRAM, 0) < 0) {
 				goto bad;
 			}
 			_ip_port.sin_addr.s_addr = INADDR_ANY;
-			_ip_port.sin_port = htons(port);
+			_ip_port.sin_port        = htons(port);
 			setsockopt(SOL_SOCKET, SO_REUSEADDR | SO_BROADCAST, &flag,
-				sizeof(flag));
+					   sizeof(flag));
 			if (this->bind() < 0) {
 				goto bad;
 			}
 		bad:
-			return tl::unexpected(std::errc(errno));
+			return SOCKET_ERROR;
 		}
+		// Returns -EINVAL for invalid argument, -1 if fails, 0 for success.
 		_ResType send_to(std::string_view ip, uint16_t port,
-			std::string_view message) {
+						 std::string_view message) {
 			struct sockaddr_in target_udp_addr {};
 			int                ret = 0;
 
 			memset(&target_udp_addr, 0, sizeof(target_udp_addr));
 			target_udp_addr.sin_family = AF_INET;
-			target_udp_addr.sin_port = htons(port);
-			target_udp_addr.sin_addr.s_addr = inet_addr(ip.data());
+			target_udp_addr.sin_port   = htons(port);
+			inet_pton(AF_INET, ip.data(), &target_udp_addr.sin_addr);
 			if (target_udp_addr.sin_addr.s_addr == INADDR_NONE) {
-				return tl::unexpected(std::errc::invalid_argument);
+				return -EINVAL;
 			}
 
 			ret = ::sendto(_fd, message.data(), message.size(), 0,
-				(const struct sockaddr*)&target_udp_addr,
-				sizeof(struct sockaddr));
-			if (ret == -1) {
-				return tl::unexpected(std::errc((*__errno_location())));
-			}
+						   (const struct sockaddr*)&target_udp_addr,
+						   sizeof(struct sockaddr));
 			return ret;
 		}
 		_ResType send_broadcast_message(uint16_t         port,
-			std::string_view message) {
+										std::string_view message) {
 			return send_to("255.255.255.255", port, message);
 		}
-	};
+};
 
 }; // namespace mfcslib
 
+#ifdef __unix__
 std::vector<std::string> list_all_files_in_directory(const char* path) {
 	auto dir_d = opendir(path);
 	if (dir_d == nullptr) {
 		return {};
 	}
 	std::vector<std::string> res;
-	struct dirent* ptr = readdir(dir_d);
+	struct dirent*           ptr   = readdir(dir_d);
 	std::string              _path = path;
 	if (_path.back() != '/') {
 		_path += '/';
@@ -563,7 +519,8 @@ std::vector<std::string> list_all_files_in_directory(const char* path) {
 		}
 		if (ptr->d_type == DT_REG) {
 			res.emplace_back(std::format("{}{}", _path, ptr->d_name));
-		} else if (ptr->d_type == DT_DIR) {
+		}
+		else if (ptr->d_type == DT_DIR) {
 			auto son_dir = list_all_files_in_directory(ptr->d_name);
 			for (auto& file : son_dir) {
 				res.emplace_back(_path + file);
@@ -572,5 +529,6 @@ std::vector<std::string> list_all_files_in_directory(const char* path) {
 	}
 	return res;
 }
+#endif
 
 #endif // !IO_HPP
