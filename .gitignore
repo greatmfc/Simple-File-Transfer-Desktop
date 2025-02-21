@@ -364,3 +364,5 @@ FodyWeavers.xsd
 /3g
 *.mp4
 /include/exception.hpp
+*.exe
+*.jpg

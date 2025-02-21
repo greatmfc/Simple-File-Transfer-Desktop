@@ -102,6 +102,9 @@ template <bool isSocket = false> class basic_io {
 		ssize_t read(TypeArray<Byte>& buf) {
 			return this->read(buf, 0, buf.length());
 		}
+		ssize_t read_buf(TypeArray<Byte>* buf) {
+			return this->read(*buf, 0, buf->length());
+		}
 
 		// Returns the number of bytes have been written, -1 if fails.
 		ssize_t write(const Byte* buf, _SizeType nbytes) {
@@ -131,6 +134,9 @@ template <bool isSocket = false> class basic_io {
 		}
 		auto write(TypeArray<Byte>& buf) {
 			return this->write(buf, 0, buf.length());
+		}
+		auto write_buf(TypeArray<Byte>* buf) {
+			return this->write(*buf, 0, buf->length());
 		}
 		auto write(const std::string_view& buf) {
 			return this->write(buf.data(), buf.length());
