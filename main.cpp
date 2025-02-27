@@ -46,7 +46,7 @@ extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #endif
 #define SERVER_PORT 7897
 #define MAXARRSZ    2048'000'000ull
-#define VERSION     1.1f
+#define VERSION     1.2f
 constexpr size_t bufSize = MAXARRSZ / 2;
 string info = format(
 	"\033[1msft_host version {0:.1f}, built in: {1} {2}. Developed by greatmfc.\033[0m",
@@ -322,7 +322,7 @@ int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
 expected<mfcslib::tcp_socket, int>
 wait_for_peers_to_connect(const socket_type& local_udp_host,
 						  const socket_type& local_tcp_host, int retry = 15) {
-	char               recv_buf[128];
+	array<char, 128>   recv_buf;
 	struct sockaddr_in responded_addr;
 	socklen_t          len = sizeof(responded_addr);
 	char               host[_SC_HOST_NAME_MAX + 1];
@@ -356,7 +356,8 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 		goto Accept;
 	}
 
-	iRet = recvfrom(udpfd, recv_buf, sizeof(recv_buf) - 1, 0, (sockaddr*)&responded_addr, &len);
+	recv_buf.fill(0);
+	iRet = recvfrom(udpfd, recv_buf.data(), sizeof(recv_buf) - 1, 0, (sockaddr*)&responded_addr, &len);
 	[[unlikely]] if (inet_ntop(AF_INET, &responded_addr.sin_addr, ip_str, INET_ADDRSTRLEN) ==
 		nullptr) {
 		perror("trans fail!\n");
@@ -371,7 +372,7 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 		goto bad;
 	}
 	str = sh.form_respond_header(host, local_tcp_host.addr.sin_port);
-	msg = recv_buf;
+	msg = recv_buf.data();
 	idx = msg.find_last_of('/') + 1;
 	responded_addr.sin_port =
 		static_cast<in_port_t>(stoi(msg.substr(idx, msg.size() - idx)));
@@ -640,6 +641,7 @@ void receive_file(mfcslib::tcp_socket& target) {
 				buffer = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
 			}
 		}
+		write_res.wait();
 		file_output_stream.write(*buffer, 0, bytesRemain);
 	}
 	cout << '\n';
@@ -719,108 +721,111 @@ int main() {
 #endif
 	std::ios::sync_with_stdio(false);
 	create_udp_socket(usocket);
-	while (true) {
-	start:
-		if (choose_working_mode()) { // Transfer mode
-			mfcslib::File       file_fd;
-			mfcslib::tcp_socket tfd;
-			char                choice = 0;
-			socket_type         tsocket{};
+	try {
+		while (true) {
+		start:
+			if (choose_working_mode()) { // Transfer mode
+				mfcslib::File       file_fd;
+				mfcslib::tcp_socket tfd;
+				char                choice = 0;
+				socket_type         tsocket{};
 
-		choose:
-#ifdef __unix__
-			cout << "Please input the path of file: ";
-			cin >> file_name;
-#else
-			file_name = OpenFileDialog();
-#endif
-			sockclose(tsocket.fd);
-			if (file_name.empty()) {
-				cerr << "Didn't choose any file." << endl;
-				goto start;
-			}
-			file_fd = file_name;
-			if (file_fd.open_read_only()) {
-				goto again;
-			}
-			perror("Fail to open file");
-			std::cerr << "Please try again." << endl;
-			goto choose;
-
-		again:
-			all_hosts.erase(all_hosts.begin(), all_hosts.end());
-			if (search_for_sft_peers(usocket, 2, all_hosts) <= 0) {
-				cout << "Didn't find any sft hosts." << endl;
-				cout << "Choose next step:\n0. Search again.\t"
-						"1. Input ip and port manually.\t"
-						"2. Choose another mode.";
-				cin >> choice;
-				choice %= 3;
-				if (choice == 0) {
-					goto again;
-				}
-				else if (choice == 1) {
-					if (manual_connect_to_peer(tsocket) == 0) {
-						goto send;
-					}
-				}
-				continue;
-			}
-			if (connect_to_peer(all_hosts, tsocket) == -1) {
-				continue;
-			}
-		send:
-			tfd = mfcslib::tcp_socket(tsocket.fd, tsocket.addr);
-		round:
-			send_file(tfd, file_fd);
-			cout << "Continue to transfer: 0.no\t1.yes ";
-			cin >> continue_current_mode;
-			if (continue_current_mode) {
-			rechoose:
+			choose:
 #ifdef __unix__
 				cout << "Please input the path of file: ";
 				cin >> file_name;
 #else
 				file_name = OpenFileDialog();
 #endif
+				sockclose(tsocket.fd);
 				if (file_name.empty()) {
 					cerr << "Didn't choose any file." << endl;
 					goto start;
 				}
 				file_fd = file_name;
 				if (file_fd.open_read_only()) {
-					goto round;
+					goto again;
 				}
 				perror("Fail to open file");
 				std::cerr << "Please try again." << endl;
-				goto rechoose;
-			}
-		}
-		else { // Receive mode
-			tcp_socket  tfd;
-			socket_type tsocket{};
+				goto choose;
 
-			create_tcp_socket(tsocket, true);
-		try_again:
-			auto return_value = wait_for_peers_to_connect(usocket, tsocket);
-			if (!return_value) {
-				if (return_value.error() == WAIT_TIMEOUT) {
-					goto try_again;
+			again:
+				all_hosts.erase(all_hosts.begin(), all_hosts.end());
+				if (search_for_sft_peers(usocket, 2, all_hosts) <= 0) {
+					cout << "Didn't find any sft hosts." << endl;
+					cout << "Choose next step:\n0. Search again.\t"
+						"1. Input ip and port manually.\t"
+						"2. Choose another mode.";
+					cin >> choice;
+					choice %= 3;
+					if (choice == 0) {
+						goto again;
+					} else if (choice == 1) {
+						if (manual_connect_to_peer(tsocket) == 0) {
+							goto send;
+						}
+					}
+					continue;
 				}
-				// cout << "Cannot connect to peers." << endl;
-				continue;
-			}
+				if (connect_to_peer(all_hosts, tsocket) == -1) {
+					continue;
+				}
+			send:
+				tfd = mfcslib::tcp_socket(tsocket.fd, tsocket.addr);
+			round:
+				send_file(tfd, file_fd);
+				cout << "Continue to transfer: 0.no\t1.yes ";
+				cin >> continue_current_mode;
+				if (continue_current_mode) {
+				rechoose:
+#ifdef __unix__
+					cout << "Please input the path of file: ";
+					cin >> file_name;
+#else
+					file_name = OpenFileDialog();
+#endif
+					if (file_name.empty()) {
+						cerr << "Didn't choose any file." << endl;
+						goto start;
+					}
+					file_fd = file_name;
+					if (file_fd.open_read_only()) {
+						goto round;
+					}
+					perror("Fail to open file");
+					std::cerr << "Please try again." << endl;
+					goto rechoose;
+				}
+			} else { // Receive mode
+				tcp_socket  tfd;
+				socket_type tsocket{};
 
-			tfd = std::move(return_value.value());
-		receive:
-			receive_file(tfd);
-			cout << "Continue to receive: 0.no\t1.yes ";
-			cin >> continue_current_mode;
-			if (continue_current_mode) {
-				cout << "Pending requests..." << endl;
-				goto receive;
+				create_tcp_socket(tsocket, true);
+			try_again:
+				auto return_value = wait_for_peers_to_connect(usocket, tsocket);
+				if (!return_value) {
+					if (return_value.error() == WAIT_TIMEOUT) {
+						goto try_again;
+					}
+					// cout << "Cannot connect to peers." << endl;
+					continue;
+				}
+
+				tfd = std::move(return_value.value());
+			receive:
+				receive_file(tfd);
+				cout << "Continue to receive: 0.no\t1.yes ";
+				cin >> continue_current_mode;
+				if (continue_current_mode) {
+					cout << "Pending requests..." << endl;
+					goto receive;
+				}
 			}
 		}
+	}
+	catch (const std::exception& e) {
+		cerr << e.what() << endl;
 	}
 #ifdef _WIN32
 	WSACleanup();
