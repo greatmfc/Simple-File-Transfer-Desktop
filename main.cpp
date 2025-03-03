@@ -49,7 +49,7 @@ extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #define VERSION     1.2f
 constexpr size_t bufSize = MAXARRSZ / 2;
 string info = format(
-	"\033[1msft_host version {0:.1f}, built in: {1} {2}. Developed by greatmfc.\033[0m",
+	"\033[1mSimple File Transfer Desktop version {0:.1f}, built in: {1} {2}. Developed by greatmfc.\033[0m",
 	VERSION, __DATE__, __TIME__);
 
 using namespace std;

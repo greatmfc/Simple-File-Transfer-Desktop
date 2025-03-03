@@ -17,8 +17,8 @@ make
 
 # Notes
 
-- On Windows, the program requires administrator permission to add a firewall exception when launched for the first time.
-- And for every startup, you will to select a network to find the other SFT hosts due to the limitation on Windows.
+- On Windows, the program requires administrator permission to add a firewall exception when being launched for the first time.
+- For every startup, you need to select a network first in order to find the other SFT hosts due to the limitation on Windows.
 
-# Screenshots
-![](./pics/pic1.png)
+# Example
+![](./pics/sft-desktop.gif)
