@@ -39,14 +39,14 @@ extern bool         ConfigureFirewall();
 extern std::wstring convert_string_to_wstring(const char* str);
 extern std::string  convert_wstring_to_string(const wchar_t* wstr);
 struct NameIP {
-		std::string name;
-		std::string ip;
+	std::string name;
+	std::string ip;
 };
 extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #endif
 #define SERVER_PORT 7897
 #define MAXARRSZ    2048'000'000ull
-#define VERSION     1.2f
+#define VERSION     1.3f
 constexpr size_t bufSize = MAXARRSZ / 2;
 string info = format(
 	"\033[1mSimple File Transfer Desktop version {0:.1f}, built in: {1} {2}. Developed by greatmfc.\033[0m",
@@ -285,7 +285,7 @@ int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
 	while (true) {
 		cout << "Enter your choice: ";
 		cin >> count;
-		if (count <= all_hosts.size()) {
+		if (count <= all_hosts.size() && count > 0) {
 			cout << format("Your choice is: {}\n",
 						   all_hosts[--count].peer_name);
 			break;
@@ -752,7 +752,7 @@ int main() {
 
 			again:
 				all_hosts.erase(all_hosts.begin(), all_hosts.end());
-				if (search_for_sft_peers(usocket, 2, all_hosts) <= 0) {
+				if (search_for_sft_peers(usocket, 3, all_hosts) <= 0) {
 					cout << "Didn't find any sft hosts." << endl;
 					cout << "Choose next step:\n0. Search again.\t"
 						"1. Input ip and port manually.\t"
