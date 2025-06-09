@@ -22,7 +22,7 @@ using tl::unexpected;
 #pragma comment(lib, "ws2_32.lib")
 #define sockclose(s) ::closesocket(s)
 #define sockerrno    GetLastError()
-#define perror(str)  cout << str << ": " << get_winsock_error_str() << endl
+#define perror(str)  std::cout << str << ": " << get_winsock_error_str() << endl
 extern std::string get_winsock_error_str(int errcode = 0);
 using socklen_t = int;
 using optval_t  = char;
@@ -48,11 +48,11 @@ using std::string;
 using namespace std::filesystem;
 using string_type = path::string_type;
 #ifdef _WIN32
-using _ResType  = int;
-using _SizeType = unsigned long;
+using ResType  = int;
+using SizeType = unsigned long;
 #else
-using _ResType  = ssize_t;
-using _SizeType = size_t;
+using ResType  = ssize_t;
+using SizeType = size_t;
 #endif
 
 template <bool isSocket = false> class basic_io {
@@ -69,14 +69,14 @@ template <bool isSocket = false> class basic_io {
 			this->close();
 		}
 
-		ssize_t read(Byte* buf, _SizeType nbytes) {
+		ssize_t read(Byte* buf, SizeType nbytes) const {
 #ifdef _WIN32
 			if constexpr (isSocket) {
 				auto ret = ::recv(_fd, buf, nbytes, 0);
 				return ret;
 			}
 			else {
-				_SizeType bytes_read = 0;
+				SizeType bytes_read = 0;
 				bool      success =
 					ReadFile((HANDLE)_fd, buf, nbytes, &bytes_read, NULL);
 				return success ? bytes_read : -1;
@@ -86,12 +86,12 @@ template <bool isSocket = false> class basic_io {
 			return ret;
 #endif
 		}
-		Byte read_byte() {
+		Byte read_byte() const {
 			Byte charc = -1;
 			this->read(&charc, 1);
 			return charc;
 		}
-		ssize_t read(TypeArray<Byte>& buf, _SizeType pos, _SizeType sz) {
+		ssize_t read(TypeArray<Byte>& buf, off_t pos, SizeType sz) const {
 #ifdef DEBUG
 			auto len = buf.length();
 			if (pos >= len || sz > len || pos + sz > len)
@@ -99,22 +99,22 @@ template <bool isSocket = false> class basic_io {
 #endif // DEBUG
 			return this->read(buf.get_ptr() + pos, sz);
 		}
-		ssize_t read(TypeArray<Byte>& buf) {
+		ssize_t read(TypeArray<Byte>& buf) const {
 			return this->read(buf, 0, buf.length());
 		}
-		ssize_t read_buf(TypeArray<Byte>* buf) {
+		ssize_t read_buf(TypeArray<Byte>* buf) const {
 			return this->read(*buf, 0, buf->length());
 		}
 
 		// Returns the number of bytes have been written, -1 if fails.
-		ssize_t write(const Byte* buf, _SizeType nbytes) {
+		ssize_t write(const Byte* buf, SizeType nbytes) {
 #ifdef _WIN32
 			if constexpr (isSocket) {
 				auto ret = ::send(_fd, buf, nbytes, 0);
 				return ret;
 			}
 			else {
-				_SizeType bytes_written = 0;
+				SizeType bytes_written = 0;
 				bool      success =
 					WriteFile((HANDLE)_fd, buf, nbytes, &bytes_written, NULL);
 				return success ? bytes_written : -1;
@@ -124,7 +124,7 @@ template <bool isSocket = false> class basic_io {
 			return ret;
 #endif
 		}
-		auto write(TypeArray<Byte>& buf, _SizeType pos, _SizeType sz) {
+		auto write(TypeArray<Byte>& buf, off_t pos, SizeType sz) {
 #ifdef DEBUG
 			auto len = buf.length();
 			if (pos >= len || sz > len || pos + sz > len)
@@ -137,6 +137,9 @@ template <bool isSocket = false> class basic_io {
 		}
 		auto write_buf(TypeArray<Byte>* buf) {
 			return this->write(*buf, 0, buf->length());
+		}
+		auto write_buf_pos(TypeArray<Byte>* buf, off_t pos, SizeType sz) {
+			return this->write(*buf, pos, sz);
 		}
 		auto write(const std::string_view& buf) {
 			return this->write(buf.data(), buf.length());
@@ -172,8 +175,11 @@ class File : public basic_io<false> {
 
 		File()            = default;
 		File(const File&) = delete;
-		File(const string_type& path) : _file_path(path) {
-		}
+#ifdef _WIN32
+		File(std::wstring_view path) : _file_path(path) {}
+#else
+		File(std::string_view path) : _file_path(path) {}
+#endif
 		File(File&& other) {
 			this->close();
 			this->_fd        = other._fd;
@@ -253,19 +259,19 @@ class File : public basic_io<false> {
 		string size_string() const {
 			return std::to_string(file_size(_file_path));
 		}
-		path::string_type get_parent() {
+		path::string_type get_parent() const {
 			return _file_path.parent_path();
 		}
-		path::string_type get_absolute() {
+		path::string_type get_absolute() const {
 			return absolute(_file_path);
 		}
-		path::string_type filename() {
+		path::string_type filename() const {
 			return _file_path.filename();
 		}
-		path::string_type get_type() {
+		path::string_type get_type() const {
 			return _file_path.extension().c_str();
 		}
-		size_t get_fd() {
+		size_t get_fd() const {
 			return _fd;
 		}
 		auto get_last_modified_time() const {
@@ -374,7 +380,7 @@ class tcp_socket : public raw_socket {
 		}
 
 		// Returns -EINVAL for invalid argument, -1 if fails, 0 for success.
-		_ResType connect(std::string_view ip, uint16_t port) {
+		ResType connect(std::string_view ip, uint16_t port) {
 			inet_pton(AF_INET, ip.data(), &_ip_port.sin_addr);
 			_ip_port.sin_port = htons(port);
 			if (_ip_port.sin_addr.s_addr == INADDR_NONE) {
@@ -393,7 +399,7 @@ class tcp_socket : public raw_socket {
 			return SOCKET_ERROR;
 		}
 
-		_ResType listen(uint16_t port, int n = 5) {
+		ResType listen(uint16_t port, int n = 5) {
 			optval_t flag = 1;
 
 			if (initialize(AF_INET, SOCK_STREAM, 0) < 0) {
@@ -464,7 +470,7 @@ class udp_socket : public raw_socket {
 		}
 		~udp_socket() = default;
 
-		_ResType set_local_port(uint16_t port) {
+		ResType set_local_port(uint16_t port) {
 			optval_t flag = 1;
 
 			if (initialize(AF_INET, SOCK_DGRAM, 0) < 0) {
@@ -481,7 +487,7 @@ class udp_socket : public raw_socket {
 			return SOCKET_ERROR;
 		}
 		// Returns -EINVAL for invalid argument, -1 if fails, 0 for success.
-		_ResType send_to(std::string_view ip, uint16_t port,
+		ResType send_to(std::string_view ip, uint16_t port,
 						 std::string_view message) {
 			struct sockaddr_in target_udp_addr {};
 			int                ret = 0;
@@ -499,7 +505,7 @@ class udp_socket : public raw_socket {
 						   sizeof(struct sockaddr));
 			return ret;
 		}
-		_ResType send_broadcast_message(uint16_t         port,
+		ResType send_broadcast_message(uint16_t         port,
 										std::string_view message) {
 			return send_to("255.255.255.255", port, message);
 		}

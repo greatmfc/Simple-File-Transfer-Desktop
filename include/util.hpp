@@ -8,80 +8,79 @@
 #include <unordered_map>
 #include <vector>
 #include <format>
+#include <algorithm>
 using Byte = char;
 namespace sc = std::chrono;
 using namespace std::chrono_literals;
 namespace mfcslib {
-	template <typename _Type>
+	template <typename Type>
 	class TypeArray {
-#ifdef _WIN32
-		using _SizeType = int;
-#else
-		using _SizeType = size_t;
-#endif
+		using SizeType = size_t;
 
 	public:
 		TypeArray() = delete;
 		TypeArray(const TypeArray& arg) = delete;
 		constexpr ~TypeArray() {
-			if (_DATA != nullptr) {
-				delete[] _DATA;
-				_SIZE = 0;
-				_DATA = nullptr;
+			if (m_DATA != nullptr) {
+				delete[] m_DATA;
+				m_SIZE = 0;
+				m_DATA = nullptr;
 			}
-		};
-		constexpr explicit TypeArray(size_t sz) : _SIZE(sz) {
-			_DATA = new _Type[sz];
-			memset(_DATA, 0, sz);
+		}
+		constexpr explicit TypeArray(size_t sz) : m_SIZE(sz) {
+			m_DATA = new Type[sz];
+			memset(m_DATA, 0, sz);
 		}
 		constexpr explicit TypeArray(TypeArray&& arg) {
-			_DATA = arg._DATA;
-			arg._DATA = nullptr;
-			_SIZE = arg._SIZE;
-			arg._SIZE = 0;
+			m_DATA = arg.m_DATA;
+			arg.m_DATA = nullptr;
+			m_SIZE = arg.m_SIZE;
+			arg.m_SIZE = 0;
 		}
-		constexpr _Type& operator[](int arg) {
+		constexpr Type& operator[](int arg) {
 #ifdef DEBUG
-			if (arg < 0 || arg >= _SIZE)
+			if (arg < 0 || arg >= m_SIZE){
 				throw std::out_of_range("In [].");
+			}
 #endif
-			return _DATA[arg];
+			return m_DATA[arg];
 		}
 		constexpr bool empty() {
-			return _DATA == nullptr;
+			return m_DATA == nullptr;
 		}
-		constexpr void fill(_Type val, size_t start, size_t end) {
+		constexpr void fill(Type val, size_t start, size_t end) {
 #ifdef DEBUG
-			if (start >= end)
+			if (start >= end) {
 				throw std::out_of_range(
 					"In fill, start is greater or equal to end.");
+			}
 #endif
-			memset(_DATA + start, val, end - start);
+			memset(m_DATA + start, val, end - start);
 		}
 		constexpr void empty_array() {
-			fill(0, 0, _SIZE);
+			fill(0, 0, m_SIZE);
 		}
-		constexpr _SizeType length() {
-			return _SIZE;
+		constexpr SizeType length() {
+			return m_SIZE;
 		}
 		constexpr void destroy() {
 			this->~TypeArray();
 		}
 		constexpr auto get_ptr() {
-			return _DATA;
+			return m_DATA;
 		}
 		constexpr auto to_string() {
-			return std::string(_DATA);
+			return std::string(m_DATA);
 		}
-		friend constexpr std::basic_ostream<_Type>&
-			operator<<(std::basic_ostream<_Type>& os, TypeArray<_Type>& str) {
-			os << str._DATA;
+		friend constexpr std::basic_ostream<Type>&
+			operator<<(std::basic_ostream<Type>& os, TypeArray<Type>& str) {
+			os << str.m_DATA;
 			return os;
 		}
 
 	private:
-		_Type* _DATA = nullptr;
-		_SizeType _SIZE = 0;
+		Type* m_DATA = nullptr;
+		SizeType m_SIZE = 0;
 	};
 	template <typename T = Byte> auto make_array(size_t sz) {
 		return TypeArray<T>(sz);
@@ -165,15 +164,17 @@ namespace mfcslib {
 		sc::seconds _interval = 300s;
 	};
 
-	template <template <typename> typename Container = std::vector,
-		typename StringType = std::string>
-	constexpr Container<StringType> str_split(std::string str,
-		std::string_view delim) {
-		Container<StringType> cont;
-		for (const auto& word : std::views::split(str, delim)) {
-			cont.emplace_back(StringType(word.begin(), word.end()));
+	constexpr std::vector<std::string_view> str_split(std::string_view str,std::string_view delims) {
+		std::vector<std::string_view> output;
+		for (auto first = str.data(), second = str.data(),
+				  last  = first + str.size();
+			 second != last && first != last; first = second + 1) {
+			second = std::find_first_of(first, last, std::cbegin(delims), std::cend(delims));
+			if (first != second) {
+				output.emplace_back(first, second - first);
+			}
 		}
-		return cont;
+		return output;
 	}
 
 	template <typename P, typename T>

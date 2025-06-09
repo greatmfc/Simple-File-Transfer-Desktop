@@ -26,7 +26,7 @@
 #define convert_string_to_wstring(str)  str
 #define convert_wstring_to_string(wstr) wstr
 #define min(a, b)                       (((a) < (b)) ? (a) : (b))
-#define max(a,b)            (((a) > (b)) ? (a) : (b))
+#define max(a, b)                       (((a) > (b)) ? (a) : (b))
 using optval_t = int;
 #else
 #include <MSWSock.h>
@@ -34,13 +34,13 @@ using optval_t = int;
 #undef errno
 #define errno GetLastError()
 #pragma comment(lib, "mswsock.lib")
-extern std::wstring OpenFileDialog();
+extern tl::expected<std::vector<std::wstring>, std::wstring> OpenFileDialog();
 extern bool         ConfigureFirewall();
 extern std::wstring convert_string_to_wstring(const char* str);
 extern std::string  convert_wstring_to_string(const wchar_t* wstr);
 struct NameIP {
-	std::string name;
-	std::string ip;
+		std::string name;
+		std::string ip;
 };
 extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #endif
@@ -48,9 +48,9 @@ extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #define MAXARRSZ    2048'000'000ull
 #define VERSION     1.3f
 constexpr size_t bufSize = MAXARRSZ / 2;
-string info = format(
-	"\033[1mSimple File Transfer Desktop version {0:.1f}, built in: {1} {2}. Developed by greatmfc.\033[0m",
-	VERSION, __DATE__, __TIME__);
+string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
+					 "built in: {1} {2}. Developed by greatmfc.\033[0m",
+					 VERSION, __DATE__, __TIME__);
 
 using namespace std;
 using namespace mfcslib;
@@ -138,11 +138,11 @@ bad:
 // Initialize the given socket_type, returns 0 on success, -1 if fails.
 int create_tcp_socket(socket_type& local_tcp_host,
 					  bool         use_random_tcp_port = false) {
-	int         tcp_fd = -1;
-	char        flag   = 1;
-	int         ret    = 0;
-	sockaddr_in ip_port{};
-	[[maybe_unused]] u_long      op = 1;
+	int                     tcp_fd = -1;
+	char                    flag   = 1;
+	int                     ret    = 0;
+	sockaddr_in             ip_port{};
+	[[maybe_unused]] u_long op = 1;
 
 	memset(&ip_port, 0, sizeof(sockaddr_in));
 	tcp_fd                  = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
@@ -177,15 +177,15 @@ bad:
 
 // Search for sft peers in local network,
 // return the number of responding host on success, -1 if fails.
-mfcslib::_ResType search_for_sft_peers(const socket_type& local_host, int retry,
+ResType search_for_sft_peers(const socket_type& local_host, int retry,
 									   vector<sft_respond_struct>& all_hosts) {
-	mfcslib::_ResType  iRet = -1;
+	ResType            iRet = -1;
 	socklen_t          len  = sizeof(sockaddr_in);
 	char               host_name_str[_SC_HOST_NAME_MAX];
 	char               recv_buf[64];
 	string             respond;
-	struct sockaddr_in target_udp_addr;
-	struct sockaddr_in respond_addr;
+	sockaddr_in        target_udp_addr;
+	sockaddr_in        respond_addr;
 
 	target_udp_addr.sin_family      = AF_INET;
 	target_udp_addr.sin_port        = htons(SERVER_PORT);
@@ -220,7 +220,7 @@ mfcslib::_ResType search_for_sft_peers(const socket_type& local_host, int retry,
 	cout << "Searching for local sft hosts.";
 	cout.flush();
 	while (retry--) {
-		iRet = recvfrom(local_host.fd, recv_buf, sizeof(recv_buf), 0,
+		iRet = recvfrom(local_host.fd, recv_buf, sizeof(recv_buf) - 1, 0,
 						(struct sockaddr*)&respond_addr, &len);
 		if (iRet == -1) {
 			if (errno != WSAEWOULDBLOCK) {
@@ -238,9 +238,13 @@ mfcslib::_ResType search_for_sft_peers(const socket_type& local_host, int retry,
 			std::this_thread::sleep_for(1s);
 			continue;
 		}
-		auto res = mfcslib::str_split(string(recv_buf), "/");
-		all_hosts.emplace_back(res[SFT_RES_HOST], respond_addr,
-							   in_port_t(stoi(res[SFT_RES_PORT])));
+		auto res = mfcslib::str_split(recv_buf, "/");
+		in_port_t port_num = 0;
+		from_chars(res[SFT_RES_PORT].data(),
+				   res[SFT_RES_PORT].data() + res[SFT_RES_PORT].size(),
+				   port_num);
+		all_hosts.emplace_back(string(res[SFT_RES_HOST]), respond_addr,
+							   port_num);
 	}
 	cout << "\n";
 #ifdef __unix__
@@ -327,10 +331,10 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 	socklen_t          len = sizeof(responded_addr);
 	char               host[_SC_HOST_NAME_MAX + 1];
 	char               ip_str[INET_ADDRSTRLEN];
-	_ResType           iRet = 0;
+	ResType            iRet = 0;
 	size_t             idx  = 0;
 	string             str, msg;
-	int udpfd = local_udp_host.fd, tcpfd = local_tcp_host.fd;
+	int                udpfd = local_udp_host.fd, tcpfd = local_tcp_host.fd;
 #ifdef _WIN32
 	u_long op = 1;
 #endif
@@ -352,19 +356,19 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 		perror("select failed");
 		goto bad;
 	}
-	[[unlikely]] if (FD_ISSET(tcpfd, &rfds)) {
-		goto Accept;
-	}
+	[[unlikely]] if (FD_ISSET(tcpfd, &rfds)) { goto Accept; }
 
 	recv_buf.fill(0);
-	iRet = recvfrom(udpfd, recv_buf.data(), sizeof(recv_buf) - 1, 0, (sockaddr*)&responded_addr, &len);
-	[[unlikely]] if (inet_ntop(AF_INET, &responded_addr.sin_addr, ip_str, INET_ADDRSTRLEN) ==
-		nullptr) {
+	iRet = recvfrom(udpfd, recv_buf.data(), sizeof(recv_buf) - 1, 0,
+					(sockaddr*)&responded_addr, &len);
+	[[unlikely]] if (inet_ntop(AF_INET, &responded_addr.sin_addr, ip_str,
+							   INET_ADDRSTRLEN) == nullptr) {
 		perror("trans fail!\n");
 		goto bad;
 	}
 #ifdef DEBUG
-	cout << format("Receive msg: {}\nFrom: {}", recv_buf, ip_str) << endl;
+	cout << format("Receive msg: {}\nFrom: {}", recv_buf.data(), ip_str)
+		 << endl;
 #endif // DEBUG
 	iRet = gethostname(host, _SC_HOST_NAME_MAX);
 	[[unlikely]] if (iRet == -1) {
@@ -417,17 +421,24 @@ bad:
 	return tl::unexpected(GetLastError());
 }
 
-bool send_file(mfcslib::tcp_socket& target, mfcslib::File& file) {
-	off_t     off        = 0;
-	_SizeType have_send  = 0;
-	char      code       = -1;
-	auto      file_sz    = file.size();
-	_ResType  ret        = -1;
-	[[maybe_unused]] size_t    bytes_left = file_sz;
-	string    request;
+bool send_file(mfcslib::tcp_socket& target, const vector<File>& files) {
+	[[maybe_unused]] off_t off       = 0;
+	size_t   have_send = 0;
+	char     code      = -1;
+	size_t   file_sz = 0, bytes_left = 0;
+	ResType ret     = -1;
+	string   request = "sft1.1/FIL";
 
-	request = sh.form_file_header(
-		convert_wstring_to_string(file.filename().c_str()), file_sz);
+	for (const auto& file : files) {
+#ifdef _WIN32
+		request +=
+			format("/{}/{}", convert_wstring_to_string(file.filename().c_str()),
+				   file.size());
+#else
+		request += format("/{}/{}", file.filename(), file.size());
+#endif
+	}
+	request += "\r\n";
 	target.write(request);
 	code = target.read_byte();
 	if (code != '1') {
@@ -436,117 +447,135 @@ bool send_file(mfcslib::tcp_socket& target, mfcslib::File& file) {
 	}
 	target.set_nonblocking();
 #ifdef __unix__
-	cout << "Sending file: " << file.filename() << endl;
-	while (have_send < file_sz) {
-		ret = sendfile(target.get_fd(), file.get_fd(), &off, file_sz);
-		[[likely]] if (ret == -1) {
-			[[unlikely]] if (errno != EAGAIN) {
-				perror("Sendfile failed");
-				break;
-			}
-			continue;
-		}
-		have_send += ret;
-		mfcslib::progress_bar(have_send, file_sz);
+	std::cout << "Sending file: ";
+	for (const auto& file : files) {
+		std::cout << file.filename() << " ";
 	}
-#else
-	cout << "Sending file: "
-		 << convert_wstring_to_string(file.filename().c_str()) << endl;
-
-	if (file_sz <= MAXARRSZ) {
-		auto buf = mfcslib::make_array<Byte>(file_sz);
-		ret      = file.read(buf);
-		if (ret == -1) {
-			perror("Fail to read file");
-			return false;
-		}
-		while (bytes_left > 0) {
-			ret = target.write(buf, have_send, bytes_left);
+	std::cout << endl;
+	for (const auto& file : files) {
+		std::cout << format("Sending file: {}\n", file.filename());
+		have_send = 0;
+		file_sz   = file.size();
+		off       = 0;
+		while (have_send < file_sz) {
+			ret = sendfile(target.get_fd(), file.get_fd(), &off, file_sz);
 			[[likely]] if (ret == -1) {
-				[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-					perror("Fail to send file");
+				[[unlikely]] if (errno != EAGAIN) {
+					perror("Sendfile failed");
 					break;
 				}
 				continue;
 			}
-			[[unlikely]] if (ret == 0 && bytes_left > 0) {
-				cerr << "Connection is closed by peer before transfer is "
-						"complete."
-					 << endl;
-					break;
-			}
 			have_send += ret;
-			bytes_left -= ret;
 			mfcslib::progress_bar(have_send, file_sz);
 		}
+		cout << '\n';
 	}
-	else {
-		int bufferidx = 1;
-		auto   buffer1 = mfcslib::make_array<Byte>(bufSize);
-		auto   buffer2 = mfcslib::make_array<Byte>(bufSize);
-		future<ssize_t> read_res;
-		size_t num = 0;
-		TypeArray<Byte>* buffer = &buffer1;
+#else
+	for (const auto& file : files) {
+		std::cout << format("Sending file: {}\n",
+							convert_wstring_to_string(file.filename().c_str()));
+		file_sz    = file.size();
+		bytes_left = file_sz;
+		have_send  = 0;
 
-		ret = file.read(buffer1);
-		if (ret == -1) {
-			perror("Fail to read file");
-			goto end;
-		}
-		read_res = std::async(std::launch::async, &File::read_buf, &file, &buffer2);
-		num = min(bufSize, bytes_left);
-		while (bytes_left > 0) {
-			ret = target.write(*buffer, have_send, num - have_send);
-			[[likely]] if (ret == -1) {
-				[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-					perror("Fail to send file");
-					cout << '\n';
+		if (file_sz <= MAXARRSZ) {
+			auto buf = mfcslib::make_array<Byte>(file_sz);
+			ret      = file.read(buf);
+			if (ret == -1) {
+				perror("Fail to read file");
+				return false;
+			}
+			while (bytes_left > 0) {
+				ret = target.write(buf, have_send, bytes_left);
+				[[likely]] if (ret == -1) {
+					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
+						perror("Fail to send file");
+						break;
+					}
+					continue;
+				}
+				[[unlikely]] if (ret == 0 && bytes_left > 0) {
+					cerr << "Connection is closed by peer before transfer is "
+							"complete."
+						 << endl;
 					break;
 				}
-				continue;
-			}
-			[[unlikely]] if (ret == 0 && bytes_left > 0) {
-				cerr << "Connection is closed by peer before transfer is "
-						"complete."
-					 << endl;
-				break;
-			}
-			have_send += ret;
-			bytes_left -= ret;
-			mfcslib::progress_bar(file_sz - bytes_left, file_sz);
-			[[unlikely]] if (have_send == bufSize) {
-				read_res.wait();
-				ret = read_res.get();
-				[[unlikely]] if (ret == -1) {
-					perror("Fail to read file");
-					cout << '\n';
-					break;
-				}
-				read_res = std::async(std::launch::async, &File::read_buf, &file, buffer);
-				num = min(bufSize, bytes_left);
-				have_send = 0;
-				buffer = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+				have_send += ret;
+				bytes_left -= ret;
+				mfcslib::progress_bar(have_send, file_sz);
 			}
 		}
+		else {
+			int              bufferidx = 1;
+			auto             buffer1   = mfcslib::make_array<Byte>(bufSize);
+			auto             buffer2   = mfcslib::make_array<Byte>(bufSize);
+			future<ssize_t>  read_res;
+			size_t           num    = 0;
+			TypeArray<Byte>* buffer = &buffer1;
+
+			ret                     = file.read(buffer1);
+			if (ret == -1) {
+				perror("Fail to read file");
+				goto end;
+			}
+			read_res = std::async(std::launch::async, &File::read_buf, &file,
+								  &buffer2);
+			num      = min(bufSize, bytes_left);
+			while (bytes_left > 0) {
+				ret = target.write(*buffer, have_send, num - have_send);
+				[[likely]] if (ret == -1) {
+					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
+						perror("Fail to send file");
+						cout << '\n';
+						break;
+					}
+					continue;
+				}
+				[[unlikely]] if (ret == 0 && bytes_left > 0) {
+					cerr << "Connection is closed by peer before transfer is "
+							"complete."
+						 << endl;
+					break;
+				}
+				have_send += ret;
+				bytes_left -= ret;
+				mfcslib::progress_bar(file_sz - bytes_left, file_sz);
+				[[unlikely]] if (have_send == bufSize) {
+					read_res.wait();
+					ret = read_res.get();
+					[[unlikely]] if (ret == -1) {
+						perror("Fail to read file");
+						cout << '\n';
+						break;
+					}
+					read_res  = std::async(std::launch::async, &File::read_buf,
+										   &file, buffer);
+					num       = min(bufSize, bytes_left);
+					have_send = 0;
+					buffer    = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+				}
+			}
+		}
+		cout << '\n';
 	}
-#endif
 end:
+#endif
 	target.set_blocking();
-	cout << '\n';
 	return true;
 }
 
 // No need to close file manually.
-void receive_file(mfcslib::tcp_socket& target) {
-	std::array<char, 128> request;
-	size_t                sizeOfFile    = 0;
-	size_t                bytesReceived = 0;
-	size_t                bytesLeft     = 0;
-	_ResType              ret           = 0;
+void receive_file(tcp_socket& target) {
+	std::array<char, 2048> request{};
+	size_t                 sizeOfFile    = 0;
+	size_t                 bytesReceived = 0;
+	size_t                 bytesLeft     = 0;
+	ResType                ret           = 0;
+	char                   trash[1024]{};
 
-	request.fill(0);
 	target.set_blocking();
-	ret = target.read(request.data(), request.size());
+	ret = target.read(request.data(), request.size() - 1);
 	if (ret == SOCKET_ERROR) {
 		perror("Error while trying to receive from peer");
 		return;
@@ -555,96 +584,128 @@ void receive_file(mfcslib::tcp_socket& target) {
 		std::cerr << "Peer connection has been closed." << endl;
 		return;
 	}
-	vector<string> res = mfcslib::str_split(request.data(), "/");
+	request[ret] = 0;
+	auto res     = mfcslib::str_split(request.data(), "/");
 	target.write_byte('1');
-	sizeOfFile = stoull(res[SFT_FIL_SIZE].data());
-	bytesLeft  = sizeOfFile;
 #ifdef DEBUG
-	cout << "Received request:" << request.data();
-	cout << format("Receiving file: {}\tSize: {}\n", res[SFT_FIL_NAME],
-				   sizeOfFile);
-#endif // DEBUG
-	mfcslib::File file_output_stream(
-		convert_string_to_wstring(res[SFT_FIL_NAME].c_str()));
-	if (!file_output_stream.open(true, mfcslib::File::iomode::WRONLY)) {
-		perror("Fail to create file");
-		return;
-	}
+	cout << "Receive request: " << request.data();
+#endif
 	target.set_nonblocking();
-
-	if (sizeOfFile < MAXARRSZ) {
-		auto bufferForFile = mfcslib::make_array<Byte>(sizeOfFile);
-		while (bytesLeft > 0) {
-			ret = target.read(bufferForFile, bytesReceived, bytesLeft);
-			[[likely]] if (ret == SOCKET_ERROR) {
-				[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-					perror("Error while trying to receive from peer");
-					break;
-				}
-				continue;
-			}
-			[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-				cerr << "Connection is closed by peer before transfer is "
-						"complete."
-					 << endl;
-				break;
-			}
-			bytesReceived += ret;
-			bytesLeft -= ret;
-			mfcslib::progress_bar(bytesReceived, sizeOfFile);
-		}
-		if (file_output_stream.write(bufferForFile) == -1) {
-			perror("Error while trying to write to local");
-			cout << '\n';
-		}
-	}
-	else {
-		auto   buffer1 = mfcslib::make_array<Byte>(bufSize);
-		auto   buffer2 = mfcslib::make_array<Byte>(bufSize);
-		size_t bytesRemain   = sizeOfFile;
-		auto   num           = min(bufSize, bytesLeft);
-		int bufferidx = 1;
-		TypeArray<Byte>* buffer = &buffer1;
-		future<ssize_t> write_res;
-
-		while (bytesLeft > 0) {
-			ret = target.read(*buffer, bytesReceived, num - bytesReceived);
-			[[likely]] if (ret == -1) {
-				[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-					perror("Fail to send file");
-					break;
-				}
-				continue;
-			}
-			[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-				cerr << "Connection is closed by peer before transfer is "
-						"complete."
-					 << endl;
-				break;
-			}
-			bytesReceived += ret;
-			bytesLeft -= ret;
-			mfcslib::progress_bar(sizeOfFile - bytesLeft, sizeOfFile);
-			[[unlikely]] if (bytesReceived == bufSize) {
-				[[likely]] if (bufferidx != 1) {
-					write_res.wait();
-					ret = write_res.get();
-					[[unlikely]] if (ret == -1) {
-						perror("Fail to write file");
+	for (size_t i = SFT_FIL_NAME_START; i < res.size() - 1; i += 2) {
+		const auto& file_name = res[i];
+		from_chars(res[i + 1].data(), res[i + 1].data() + res[i + 1].size(),
+				   sizeOfFile);
+		bytesLeft               = sizeOfFile;
+		bytesReceived           = 0;
+#ifdef DEBUG
+		cout << format("Receiving file: {}\tSize: {}\n", file_name, sizeOfFile);
+#endif // DEBUG
+#ifdef _WIN32
+		File file_output_stream(convert_string_to_wstring(string(file_name).data()));
+#else
+		File file_output_stream(file_name);
+#endif // _WIN32
+		if (!file_output_stream.open(true, File::iomode::WRONLY)) {
+			perror("Fail to create file");
+			while (bytesLeft > 0) {
+				ret = target.read(trash, min(bytesLeft, sizeof trash));
+				[[likely]] if (ret == SOCKET_ERROR) {
+					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
+						perror("Error while trying to receive from peer");
 						break;
 					}
+					continue;
 				}
-				write_res = std::async(std::launch::async, &File::write_buf, &file_output_stream, buffer);
-				num           = min(bufSize, bytesLeft);
-				bytesRemain   = bytesLeft;
-				bytesReceived = 0;
-				buffer = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+				if (ret == 0) {
+					cerr << "Target host is closed while receiving files.\n";
+					return;
+				}
+				bytesLeft -= ret;
+			}
+			continue;
+		}
+
+		if (sizeOfFile < MAXARRSZ) {
+			auto bufferForFile = mfcslib::make_array<Byte>(sizeOfFile);
+			while (bytesLeft > 0) {
+				ret = target.read(bufferForFile, bytesReceived, bytesLeft);
+				[[likely]] if (ret == SOCKET_ERROR) {
+					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
+						perror("Error while trying to receive from peer");
+						break;
+					}
+					continue;
+				}
+				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
+					cerr << "Connection is closed by peer before transfer is "
+							"complete."
+						 << endl;
+					break;
+				}
+				bytesReceived += ret;
+				bytesLeft -= ret;
+				mfcslib::progress_bar(bytesReceived, sizeOfFile);
+			}
+			if (bytesLeft > 0) {
+				break;
+			}
+			if (file_output_stream.write(bufferForFile) == -1) {
+				perror("Error while trying to write to local");
+				cout << '\n';
 			}
 		}
-		write_res.wait();
-		file_output_stream.write(*buffer, 0, bytesRemain);
+		else {
+			auto             buffer1     = mfcslib::make_array<Byte>(bufSize);
+			auto             buffer2     = mfcslib::make_array<Byte>(bufSize);
+			size_t           bytesRemain = sizeOfFile;
+			auto             num         = min(bufSize, bytesLeft);
+			int              bufferidx   = 1;
+			TypeArray<Byte>* buffer      = &buffer1;
+			future<ssize_t>  write_res;
+
+			while (bytesLeft > 0) {
+				ret = target.read(*buffer, bytesReceived, num - bytesReceived);
+				[[likely]] if (ret == -1) {
+					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
+						perror("Fail to send file");
+						break;
+					}
+					continue;
+				}
+				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
+					cerr << "Connection is closed by peer before transfer is "
+							"complete."
+						 << endl;
+					break;
+				}
+				bytesReceived += ret;
+				bytesLeft -= ret;
+				mfcslib::progress_bar(sizeOfFile - bytesLeft, sizeOfFile);
+				[[unlikely]] if (bytesReceived == bufSize) {
+					[[likely]] if (bufferidx != 1) {
+						write_res.wait();
+						ret = write_res.get();
+						[[unlikely]] if (ret == -1) {
+							perror("Fail to write file");
+							break;
+						}
+					}
+					write_res = std::async(std::launch::async, &File::write_buf,
+										   &file_output_stream, buffer);
+					num       = min(bufSize, bytesLeft);
+					bytesRemain   = bytesLeft;
+					bytesReceived = 0;
+					buffer        = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+				}
+			}
+			if (bytesLeft > 0) {
+				break;
+			}
+			write_res.wait();
+			file_output_stream.write(*buffer, 0, bytesRemain);
+		}
+		cout << '\n';
 	}
-	cout << '\n';
 	target.set_blocking();
 }
 
@@ -703,12 +764,31 @@ int configure_options() {
 	return 0;
 }
 
+vector<File> get_filefd_list(const vector<mfcslib::string_type>& file_list) {
+	vector<File> result;
+	for (const auto& file : file_list) {
+		File f(file);
+		if (f.open_read_only()) {
+			result.emplace_back(move(f));
+		}
+		else {
+#ifdef _WIN32
+			perror(format("Cannot open file: {}. Reason",
+						  convert_wstring_to_string(file.c_str())));
+#else
+			perror(format("Cannot open file: {}. Reason", file).c_str());
+#endif
+		}
+	}
+	return result;
+}
+
 int main() {
 	socket_type                usocket{};
 	vector<sft_respond_struct> all_hosts;
-	mfcslib::string_type       file_name;
 	int                        continue_current_mode = 0;
 
+	locale::global(locale("en_US.UTF-8"));
 #ifdef __unix__
 	signal(SIGPIPE, SIG_IGN);
 #else
@@ -721,111 +801,88 @@ int main() {
 #endif
 	std::ios::sync_with_stdio(false);
 	create_udp_socket(usocket);
-	try {
-		while (true) {
-		start:
-			if (choose_working_mode()) { // Transfer mode
-				mfcslib::File       file_fd;
-				mfcslib::tcp_socket tfd;
-				char                choice = 0;
-				socket_type         tsocket{};
+	while (true) {
+	start:
+		if (choose_working_mode()) { // Transfer mode
+			vector<File> file_fds;
+			tcp_socket   tfd;
+			char         choice = 0;
+			socket_type  tsocket{};
+			string       file_name;
 
-			choose:
+		choose:
 #ifdef __unix__
-				cout << "Please input the path of file: ";
-				cin >> file_name;
-#else
-				file_name = OpenFileDialog();
-#endif
-				sockclose(tsocket.fd);
-				if (file_name.empty()) {
-					cerr << "Didn't choose any file." << endl;
-					goto start;
-				}
-				file_fd = file_name;
-				if (file_fd.open_read_only()) {
-					goto again;
-				}
-				perror("Fail to open file");
-				std::cerr << "Please try again." << endl;
-				goto choose;
-
-			again:
-				all_hosts.erase(all_hosts.begin(), all_hosts.end());
-				if (search_for_sft_peers(usocket, 3, all_hosts) <= 0) {
-					cout << "Didn't find any sft hosts." << endl;
-					cout << "Choose next step:\n0. Search again.\t"
-						"1. Input ip and port manually.\t"
-						"2. Choose another mode.";
-					cin >> choice;
-					choice %= 3;
-					if (choice == 0) {
-						goto again;
-					} else if (choice == 1) {
-						if (manual_connect_to_peer(tsocket) == 0) {
-							goto send;
-						}
-					}
-					continue;
-				}
-				if (connect_to_peer(all_hosts, tsocket) == -1) {
-					continue;
-				}
-			send:
-				tfd = mfcslib::tcp_socket(tsocket.fd, tsocket.addr);
-			round:
-				send_file(tfd, file_fd);
-				cout << "Continue to transfer: 0.no\t1.yes ";
-				cin >> continue_current_mode;
-				if (continue_current_mode) {
-				rechoose:
-#ifdef __unix__
-					cout << "Please input the path of file: ";
-					cin >> file_name;
-#else
-					file_name = OpenFileDialog();
-#endif
-					if (file_name.empty()) {
-						cerr << "Didn't choose any file." << endl;
-						goto start;
-					}
-					file_fd = file_name;
-					if (file_fd.open_read_only()) {
-						goto round;
-					}
-					perror("Fail to open file");
-					std::cerr << "Please try again." << endl;
-					goto rechoose;
-				}
-			} else { // Receive mode
-				tcp_socket  tfd;
-				socket_type tsocket{};
-
-				create_tcp_socket(tsocket, true);
-			try_again:
-				auto return_value = wait_for_peers_to_connect(usocket, tsocket);
-				if (!return_value) {
-					if (return_value.error() == WAIT_TIMEOUT) {
-						goto try_again;
-					}
-					// cout << "Cannot connect to peers." << endl;
-					continue;
-				}
-
-				tfd = std::move(return_value.value());
-			receive:
-				receive_file(tfd);
-				cout << "Continue to receive: 0.no\t1.yes ";
-				cin >> continue_current_mode;
-				if (continue_current_mode) {
-					cout << "Pending requests..." << endl;
-					goto receive;
+			vector<string_type> file_list;
+			cout << "Please input the path of files, separated by spaces: ";
+			while (cin >> file_name) {
+				file_list.emplace_back(file_name);
+				if (cin.peek() == '\n') {
+					break;
 				}
 			}
+			file_fds = get_filefd_list(file_list);
+			if (file_fds.empty()) {
+				std::cerr << "Please try again." << endl;
+				goto choose;
+			}
+#else
+			auto retVal = OpenFileDialog();
+			if (retVal.has_value() && !retVal.value().empty()) {
+				file_fds = get_filefd_list(retVal.value());
+				if (file_fds.empty()) {
+					std::cerr << "Please try again." << endl;
+					goto choose;
+				}
+			}
+			else {
+				cerr << "Didn't choose any file." << endl;
+				goto start;
+			}
+#endif
+		again:
+			all_hosts.erase(all_hosts.begin(), all_hosts.end());
+			if (search_for_sft_peers(usocket, 3, all_hosts) <= 0) {
+				cout << "Didn't find any sft hosts." << endl;
+				cout << "Choose next step:\n0. Search again.\t"
+						"1. Input ip and port manually.\t"
+						"2. Choose another mode.";
+				cin >> choice;
+				choice %= 3;
+				if (choice == 0) {
+					goto again;
+				}
+				else if (choice == 1) {
+					if (manual_connect_to_peer(tsocket) == 0) {
+						goto send;
+					}
+				}
+				continue;
+			}
+			if (connect_to_peer(all_hosts, tsocket) == -1) {
+				continue;
+			}
+		send:
+			tfd = tcp_socket(tsocket.fd, tsocket.addr);
+			send_file(tfd, file_fds);
 		}
-	}
-	catch (const std::exception& e) {
-		cerr << e.what() << endl;
+		else { // Receive mode
+			tcp_socket  tfd;
+			socket_type tsocket{};
+
+			create_tcp_socket(tsocket, true);
+		try_again:
+			auto return_value = wait_for_peers_to_connect(usocket, tsocket);
+			if (!return_value) {
+				if (return_value.error() == WAIT_TIMEOUT) {
+					goto try_again;
+				}
+				// cout << "Cannot connect to peers." << endl;
+				continue;
+			}
+
+			tfd = std::move(return_value.value());
+			receive_file(tfd);
+		}
 	}
 #ifdef _WIN32
 	WSACleanup();

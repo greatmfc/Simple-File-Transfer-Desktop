@@ -8,6 +8,7 @@
 #include <ShObjIdl.h>
 #include <comdef.h>
 #include <netfw.h>
+#include "include/tl/expected.hpp"
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -16,10 +17,18 @@
 #define RuleNameIn L"sft-win Inbound"
 #define RuleNameOut L"sft-win Outbound"
 
+using tl::expected;
+using tl::unexpected;
+
 struct NameIP {
 	std::string name;
 	std::string ip;
 };
+
+std::wstring GetErrorMessage(HRESULT hr) {
+    _com_error err(hr);
+    return err.ErrorMessage();
+}
 
 std::string get_winsock_error_str(int errcode = 0) {
 	CHAR message[128]{};
@@ -36,51 +45,93 @@ std::string get_winsock_error_str(int errcode = 0) {
 	return std::format("{} {}", message, ecode);
 }
 
-std::wstring OpenFileDialog() {
-	std::wstring result;
+expected<std::vector<std::wstring>, std::wstring> OpenFileDialog() {
+	std::vector<std::wstring> selectedFiles;
+	std::wstring errorMessage;
 
-	// 初始化 COM 库
 	HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-	if (FAILED(hr)) {
-		return L"COM Failed";
-	}
+    if (FAILED(hr)) {
+        errorMessage = L"COM initializes fail: " + GetErrorMessage(hr);
+        return tl::unexpected(errorMessage);
+    }
 
-	// 创建文件对话框实例
-	IFileDialog* pFileDialog = NULL;
-	hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileDialog, (void**)&pFileDialog);
-	if (SUCCEEDED(hr)) {
-		// 设置对话框选项（可选）
-		DWORD dwFlags;
-		pFileDialog->GetOptions(&dwFlags);
-		pFileDialog->SetOptions(dwFlags | FOS_FORCEFILESYSTEM); // 强制选择文件系统对象
+    IFileOpenDialog* pFileOpen = nullptr;
+    hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen));
+    if (FAILED(hr)) {
+        errorMessage = L"Cannot create dialog: " + GetErrorMessage(hr);
+        CoUninitialize();
+        return tl::unexpected(errorMessage);
+    }
 
-		// 显示对话框（控制台程序无窗口，传 NULL）
-		hr = pFileDialog->Show(NULL);
+    // 设置多选选项
+    DWORD dwOptions;
+    hr = pFileOpen->GetOptions(&dwOptions);
+    if (SUCCEEDED(hr)) {
+        hr = pFileOpen->SetOptions(dwOptions | FOS_ALLOWMULTISELECT);
+    }
+    if (FAILED(hr)) {
+        errorMessage = L"Cannot get/set option: " + GetErrorMessage(hr);
+        pFileOpen->Release();
+        CoUninitialize();
+        return tl::unexpected(errorMessage);
+    }
 
-		if (SUCCEEDED(hr)) {
-			// 获取用户选择结果
-			IShellItem* pItem;
-			hr = pFileDialog->GetResult(&pItem);
-			if (SUCCEEDED(hr)) {
-				// 提取文件路径
-				PWSTR pszFilePath;
-				hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
-				if (SUCCEEDED(hr)) {
-					result = pszFilePath;
-					CoTaskMemFree(pszFilePath);
-				}
-				pItem->Release();
-			}
-		} else if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
-			// 用户取消选择
-			result = L"";
-		}
+    // 显示文件对话框
+    hr = pFileOpen->Show(NULL);
+    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) { // 用户取消
+        pFileOpen->Release();
+        CoUninitialize();
+        return selectedFiles;
+    } else if (FAILED(hr)) {
+        errorMessage = L"Cannot display dialog: " + GetErrorMessage(hr);
+        pFileOpen->Release();
+        CoUninitialize();
+        return tl::unexpected(errorMessage);
+    }
 
-		pFileDialog->Release();
-	}
+    // 获取选择结果
+    IShellItemArray* pItems = nullptr;
+    hr = pFileOpen->GetResults(&pItems);
+    if (FAILED(hr)) {
+        errorMessage = L"Cannot get results: " + GetErrorMessage(hr);
+        pFileOpen->Release();
+        CoUninitialize();
+        return tl::unexpected(errorMessage);
+    }
 
-	CoUninitialize();
-	return result;
+    DWORD numItems = 0;
+    hr = pItems->GetCount(&numItems);
+    if (FAILED(hr)) {
+        errorMessage = L"Cannot get count: " + GetErrorMessage(hr);
+        pItems->Release();
+        pFileOpen->Release();
+        CoUninitialize();
+        return tl::unexpected(errorMessage);
+    }
+
+    for (DWORD i = 0; i < numItems; ++i) {
+        IShellItem* pItem = nullptr;
+        hr = pItems->GetItemAt(i, &pItem);
+        if (FAILED(hr)) {
+            errorMessage = L"Cannot get item: " + GetErrorMessage(hr);
+            continue;
+        }
+
+        wchar_t* pszFilePath = nullptr;
+        hr = pItem->GetDisplayName(SIGDN_FILESYSPATH, &pszFilePath);
+        if (SUCCEEDED(hr)) {
+            selectedFiles.push_back(pszFilePath);
+            CoTaskMemFree(pszFilePath);
+        } else {
+            errorMessage = L"Cannot get file's path: " + GetErrorMessage(hr);
+        }
+        pItem->Release();
+    }
+
+    pItems->Release();
+    pFileOpen->Release();
+    CoUninitialize();
+    return selectedFiles;
 }
 
 bool CheckFirewallRuleExists(const wchar_t* targetRuleName) {

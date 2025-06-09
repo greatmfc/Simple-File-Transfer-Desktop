@@ -366,3 +366,6 @@ FodyWeavers.xsd
 /include/exception.hpp
 *.exe
 *.jpg
+/.clang-format
+/.clang-tidy
+/.clangd

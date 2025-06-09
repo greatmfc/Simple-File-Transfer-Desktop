@@ -40,13 +40,13 @@ enum {
 #define SFT_DIS_PORT 3
 #define SFT_RES_HOST 2
 #define SFT_RES_PORT 3
-#define SFT_FIL_NAME 2
-#define SFT_FIL_SIZE 3
+#define SFT_FIL_NAME_START 2
+#define SFT_FIL_SIZE_START 3
 
 struct sft_respond_struct {
-		string      peer_name;
-		sockaddr_in peer_addr;
-		in_port_t   peer_port;
+	string      peer_name;
+	sockaddr_in peer_addr;
+	in_port_t   peer_port;
 };
 
 class sft_header {
@@ -55,7 +55,7 @@ class sft_header {
 
 	public:
 		sft_header() {
-			message = "sft1.0/";
+			message = "sft1.1/";
 		}
 		sft_header(std::string_view ver) {
 			message = format("sft{}/", ver);
