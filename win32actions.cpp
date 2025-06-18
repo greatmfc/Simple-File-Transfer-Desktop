@@ -8,7 +8,8 @@
 #include <ShObjIdl.h>
 #include <comdef.h>
 #include <netfw.h>
-#include "include/tl/expected.hpp"
+#include <shellapi.h>
+#include <expected>
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -17,8 +18,8 @@
 #define RuleNameIn L"sft-win Inbound"
 #define RuleNameOut L"sft-win Outbound"
 
-using tl::expected;
-using tl::unexpected;
+using std::expected;
+using std::unexpected;
 
 struct NameIP {
 	std::string name;
@@ -45,14 +46,14 @@ std::string get_winsock_error_str(int errcode = 0) {
 	return std::format("{} {}", message, ecode);
 }
 
-expected<std::vector<std::wstring>, std::wstring> OpenFileDialog() {
+expected<std::vector<std::wstring>, std::wstring> OpenFileOrFolderDialog(bool openFolder = false) {
 	std::vector<std::wstring> selectedFiles;
 	std::wstring errorMessage;
 
 	HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(hr)) {
         errorMessage = L"COM initializes fail: " + GetErrorMessage(hr);
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     IFileOpenDialog* pFileOpen = nullptr;
@@ -60,33 +61,34 @@ expected<std::vector<std::wstring>, std::wstring> OpenFileDialog() {
     if (FAILED(hr)) {
         errorMessage = L"Cannot create dialog: " + GetErrorMessage(hr);
         CoUninitialize();
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     // 设置多选选项
     DWORD dwOptions;
     hr = pFileOpen->GetOptions(&dwOptions);
     if (SUCCEEDED(hr)) {
-        hr = pFileOpen->SetOptions(dwOptions | FOS_ALLOWMULTISELECT);
+		DWORD finalOptions = dwOptions | FOS_ALLOWMULTISELECT |
+							 FOS_NODEREFERENCELINKS | FOS_FORCEFILESYSTEM;
+		if (openFolder) {
+			finalOptions |= FOS_PICKFOLDERS;
+		}
+		hr = pFileOpen->SetOptions(finalOptions);
     }
     if (FAILED(hr)) {
         errorMessage = L"Cannot get/set option: " + GetErrorMessage(hr);
         pFileOpen->Release();
         CoUninitialize();
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     // 显示文件对话框
     hr = pFileOpen->Show(NULL);
-    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) { // 用户取消
-        pFileOpen->Release();
-        CoUninitialize();
-        return selectedFiles;
-    } else if (FAILED(hr)) {
+	if (FAILED(hr)) {
         errorMessage = L"Cannot display dialog: " + GetErrorMessage(hr);
         pFileOpen->Release();
         CoUninitialize();
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     // 获取选择结果
@@ -96,7 +98,7 @@ expected<std::vector<std::wstring>, std::wstring> OpenFileDialog() {
         errorMessage = L"Cannot get results: " + GetErrorMessage(hr);
         pFileOpen->Release();
         CoUninitialize();
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     DWORD numItems = 0;
@@ -106,7 +108,7 @@ expected<std::vector<std::wstring>, std::wstring> OpenFileDialog() {
         pItems->Release();
         pFileOpen->Release();
         CoUninitialize();
-        return tl::unexpected(errorMessage);
+        return unexpected(errorMessage);
     }
 
     for (DWORD i = 0; i < numItems; ++i) {

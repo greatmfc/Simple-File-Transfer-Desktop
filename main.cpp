@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstring>
 #include <vector>
 #include <chrono>
@@ -34,7 +35,8 @@ using optval_t = int;
 #undef errno
 #define errno GetLastError()
 #pragma comment(lib, "mswsock.lib")
-extern tl::expected<std::vector<std::wstring>, std::wstring> OpenFileDialog();
+extern std::expected<std::vector<std::wstring>, std::wstring>
+					OpenFileOrFolderDialog(bool openFolder = false);
 extern bool         ConfigureFirewall();
 extern std::wstring convert_string_to_wstring(const char* str);
 extern std::string  convert_wstring_to_string(const wchar_t* wstr);
@@ -45,8 +47,9 @@ struct NameIP {
 extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 #endif
 #define SERVER_PORT 7897
-#define MAXARRSZ    2048'000'000ull
-#define VERSION     1.3f
+#define MAXARRSZ    2'048'000'000ull // 2GB
+#define VERSION     1.4f
+#define CHUNK_SIZE  20'000'000ull // 20MB
 constexpr size_t bufSize = MAXARRSZ / 2;
 string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
 					 "built in: {1} {2}. Developed by greatmfc.\033[0m",
@@ -178,14 +181,14 @@ bad:
 // Search for sft peers in local network,
 // return the number of responding host on success, -1 if fails.
 ResType search_for_sft_peers(const socket_type& local_host, int retry,
-									   vector<sft_respond_struct>& all_hosts) {
-	ResType            iRet = -1;
-	socklen_t          len  = sizeof(sockaddr_in);
-	char               host_name_str[_SC_HOST_NAME_MAX];
-	char               recv_buf[64];
-	string             respond;
-	sockaddr_in        target_udp_addr;
-	sockaddr_in        respond_addr;
+							 vector<sft_respond_struct>& all_hosts) {
+	ResType     iRet = -1;
+	socklen_t   len  = sizeof(sockaddr_in);
+	char        host_name_str[_SC_HOST_NAME_MAX];
+	char        recv_buf[64];
+	string      respond;
+	sockaddr_in target_udp_addr;
+	sockaddr_in respond_addr;
 
 	target_udp_addr.sin_family      = AF_INET;
 	target_udp_addr.sin_port        = htons(SERVER_PORT);
@@ -238,7 +241,7 @@ ResType search_for_sft_peers(const socket_type& local_host, int retry,
 			std::this_thread::sleep_for(1s);
 			continue;
 		}
-		auto res = mfcslib::str_split(recv_buf, "/");
+		auto      res      = mfcslib::str_split(recv_buf, "/");
 		in_port_t port_num = 0;
 		from_chars(res[SFT_RES_PORT].data(),
 				   res[SFT_RES_PORT].data() + res[SFT_RES_PORT].size(),
@@ -256,13 +259,20 @@ ResType search_for_sft_peers(const socket_type& local_host, int retry,
 	return all_hosts.size();
 }
 
-bool choose_working_mode() {
+int choose_working_mode() {
 	int choice = 0;
 
 	// cout << "\033c";
 	cout << info << endl;
-	cout << "\nChoose a mode for program to work:\n0. Receive.       1. "
-			"Transfer.\n";
+	cout << "\nChoose a mode for program to work:\n"
+			"0. Receive.\t"
+#ifdef _WIN32
+			"1. Transfer files.\t"
+			"2. Transfer folders.\n"
+#else
+			"1. Transfer files or folders\n"
+#endif
+		;
 	cout << "Enter your choice: ";
 	cin >> choice;
 	return choice;
@@ -323,7 +333,7 @@ int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
 	return 0;
 }
 
-expected<mfcslib::tcp_socket, int>
+expected<tcp_socket, int>
 wait_for_peers_to_connect(const socket_type& local_udp_host,
 						  const socket_type& local_tcp_host, int retry = 15) {
 	array<char, 128>   recv_buf;
@@ -418,25 +428,24 @@ Accept:
 #endif
 	SetLastError(WAIT_TIMEOUT);
 bad:
-	return tl::unexpected(GetLastError());
+	return std::unexpected(GetLastError());
 }
 
-bool send_file(mfcslib::tcp_socket& target, const vector<File>& files) {
+bool send_file(tcp_socket& target, const vector<tuple<File, string>>& files) {
 	[[maybe_unused]] off_t off       = 0;
-	size_t   have_send = 0;
-	char     code      = -1;
-	size_t   file_sz = 0, bytes_left = 0;
-	ResType ret     = -1;
-	string   request = "sft1.1/FIL";
+	size_t                 have_send = 0;
+	char                   code      = -1;
+	size_t                 file_sz = 0, bytes_left = 0;
+	ResType                ret     = -1;
+	string                 request = "sft1.1/FIL";
 
-	for (const auto& file : files) {
-#ifdef _WIN32
-		request +=
-			format("/{}/{}", convert_wstring_to_string(file.filename().c_str()),
-				   file.size());
-#else
-		request += format("/{}/{}", file.filename(), file.size());
-#endif
+	for (const auto& [fd, file_path] : files) {
+		if (!fd.is_open()) { //directory
+			request += format("/{}/0", file_path);
+		}
+		else { //regular file
+			request += format("/{}/{}", file_path, fd.size());
+		}
 	}
 	request += "\r\n";
 	target.write(request);
@@ -446,14 +455,12 @@ bool send_file(mfcslib::tcp_socket& target, const vector<File>& files) {
 		return false;
 	}
 	target.set_nonblocking();
+	for (const auto& [file, file_path] : files) {
+		if (!file.is_open()) {
+			continue;
+		}
+		std::cout << "Sending file: " << file_path << '\n';
 #ifdef __unix__
-	std::cout << "Sending file: ";
-	for (const auto& file : files) {
-		std::cout << file.filename() << " ";
-	}
-	std::cout << endl;
-	for (const auto& file : files) {
-		std::cout << format("Sending file: {}\n", file.filename());
 		have_send = 0;
 		file_sz   = file.size();
 		off       = 0;
@@ -472,9 +479,6 @@ bool send_file(mfcslib::tcp_socket& target, const vector<File>& files) {
 		cout << '\n';
 	}
 #else
-	for (const auto& file : files) {
-		std::cout << format("Sending file: {}\n",
-							convert_wstring_to_string(file.filename().c_str()));
 		file_sz    = file.size();
 		bytes_left = file_sz;
 		have_send  = 0;
@@ -562,53 +566,86 @@ bool send_file(mfcslib::tcp_socket& target, const vector<File>& files) {
 end:
 #endif
 	target.set_blocking();
+	/*
+	ret = target.read(&code, 1);
+	if (ret == 0) {
+		cout << "All files have been received by the other side.\n";
+	}
+	else {
+		cout << "Something unexpected happened. Please check the other side "
+				"for file integrity.\n";
+	}
+	*/
 	return true;
 }
 
 // No need to close file manually.
 void receive_file(tcp_socket& target) {
-	std::array<char, 2048> request{};
+	std::array<char, 1024> buffer{};
+	string                 request;
 	size_t                 sizeOfFile    = 0;
 	size_t                 bytesReceived = 0;
 	size_t                 bytesLeft     = 0;
-	ResType                ret           = 0;
-	char                   trash[1024]{};
+	ResType                ret           = -1;
 
-	target.set_blocking();
-	ret = target.read(request.data(), request.size() - 1);
-	if (ret == SOCKET_ERROR) {
-		perror("Error while trying to receive from peer");
-		return;
+	//target.set_blocking();
+	target.set_nonblocking();
+	while (true) {
+		buffer.fill(0);
+		ret = target.read(buffer.data(), buffer.size());
+		if (ret == SOCKET_ERROR && errno != WSAEWOULDBLOCK) {
+			perror("Error while trying to receive from peer");
+			return;
+		}
+		else if (ret > 0) {
+			request += buffer.data();
+			if (buffer[ret - 2] == '\r' && buffer[ret - 1] == '\n') {
+				request.pop_back();
+				request.pop_back();
+				break;
+			}
+		}
+		else if (ret == 0) {
+			std::cerr << "Peer connection has been closed." << endl;
+			return;
+		}
 	}
-	else if (ret == 0) {
-		std::cerr << "Peer connection has been closed." << endl;
-		return;
-	}
-	request[ret] = 0;
-	auto res     = mfcslib::str_split(request.data(), "/");
+	//buffer[ret] = 0;
+	auto res     = str_split(request, "/");
 	target.write_byte('1');
 #ifdef DEBUG
-	cout << "Receive request: " << request.data();
+	cout << "Receive request: " << request << endl;
 #endif
-	target.set_nonblocking();
 	for (size_t i = SFT_FIL_NAME_START; i < res.size() - 1; i += 2) {
-		const auto& file_name = res[i];
+		string file_name = "./" + string(res[i]);
 		from_chars(res[i + 1].data(), res[i + 1].data() + res[i + 1].size(),
 				   sizeOfFile);
-		bytesLeft               = sizeOfFile;
-		bytesReceived           = 0;
-#ifdef DEBUG
-		cout << format("Receiving file: {}\tSize: {}\n", file_name, sizeOfFile);
-#endif // DEBUG
+		bytesLeft     = sizeOfFile;
+		bytesReceived = 0;
+#ifdef __unix__
+		for (auto& c : file_name) {
+			if (c == '\\') {
+				c = '/';
+			}
+		}
+#endif // __unix__
+		if (file_name.back() == '\\' ||
+			file_name.back() == '/') { // it is a directory
+			fs::create_directories(file_name);
+			continue;
+		}
 #ifdef _WIN32
-		File file_output_stream(convert_string_to_wstring(string(file_name).data()));
+		File file_output_stream(
+			convert_string_to_wstring(file_name.data()));
 #else
 		File file_output_stream(file_name);
 #endif // _WIN32
+		cout << format("Receiving file: {}\tSize: {}", file_name, sizeOfFile)
+			 << endl;
 		if (!file_output_stream.open(true, File::iomode::WRONLY)) {
 			perror("Fail to create file");
 			while (bytesLeft > 0) {
-				ret = target.read(trash, min(bytesLeft, sizeof trash));
+				ret = target.read(buffer.data(), min(bytesLeft, buffer.size()));
 				[[likely]] if (ret == SOCKET_ERROR) {
 					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
 						perror("Error while trying to receive from peer");
@@ -764,20 +801,100 @@ int configure_options() {
 	return 0;
 }
 
-vector<File> get_filefd_list(const vector<mfcslib::string_type>& file_list) {
-	vector<File> result;
-	for (const auto& file : file_list) {
-		File f(file);
-		if (f.open_read_only()) {
-			result.emplace_back(move(f));
+vector<tuple<File, string>>
+get_filefd_list(const vector<string_type>& path_list){
+							 //vector<string>* relative_paths = nullptr) {
+	vector<tuple<File, string>> result;
+	for (const auto& path : path_list) {
+		if (fs::is_directory(path)) {
+#ifdef _WIN32
+			string folderName = convert_wstring_to_string(
+				path.substr(path.find_last_of('\\') + 1).c_str());
+#else
+			string folderName = path;
+			auto idx = path.find_last_of('/');
+			if (idx != string::npos) {
+				folderName = path.substr(idx + 1).c_str();
+			}
+#endif // _WIN32
+			result.emplace_back(File(), folderName + '\\');
+			for (const auto& entry : fs::recursive_directory_iterator(path)) {
+				if (entry.is_regular_file()) {
+					File f(entry.path().c_str());
+					if (f.open_read_only()) {
+						std::string relative = fs::relative(entry.path(), path).string();
+#ifdef __unix__
+						for (auto& c : relative) {
+							if (c == '/') {
+								c = '\\';
+							}
+						}
+#endif // __unix__
+						result.emplace_back(move(f),
+											folderName + '\\' + relative);
+					}
+					else {
+						perror(format("Cannot open file: {}. Reason",
+									  entry.path().string())
+								   .c_str());
+						continue;
+					}
+				}
+				else if (entry.is_directory()) {
+					std::string relative =
+						fs::relative(entry.path(), path).string();
+#ifdef __unix__
+					for (auto& c : relative) {
+						if (c == '/') {
+							c = '\\';
+						}
+					}
+#endif // __unix__
+					result.emplace_back(File(),
+										folderName + '\\' + relative + '\\');
+				}
+				else {
+					cerr << format(
+						"The target file: {} is neither regular file "
+						"nor a directory. Ignored.\n",
+#ifdef _WIN32
+						convert_wstring_to_string(path.c_str())
+#else
+						path
+#endif // _WIN32	
+						);
+				}
+			}
+		}
+		else if (fs::is_regular_file(path)) {
+			File f(path);
+			if (f.open_read_only()) {
+#ifdef _WIN32
+				string fileName = convert_wstring_to_string(
+					path.substr(path.find_last_of('\\') + 1).c_str());
+#else
+				string fileName = path;
+				auto   idx      = path.find_last_of('/');
+				if (idx != string::npos) {
+					fileName = path.substr(idx + 1).c_str();
+				}
+#endif // _WIN32
+				result.emplace_back(move(f), fileName);
+			}
+			else {
+				perror(format("Cannot open file: {}. Reason", f.filename())
+						   .c_str());
+			}
 		}
 		else {
+			cerr << format("The target file: {} is neither a regular file "
+						   "nor a directory. Ignored.\n",
 #ifdef _WIN32
-			perror(format("Cannot open file: {}. Reason",
-						  convert_wstring_to_string(file.c_str())));
+						convert_wstring_to_string(path.c_str())
 #else
-			perror(format("Cannot open file: {}. Reason", file).c_str());
-#endif
+						path
+#endif // _WIN32	
+						);
 		}
 	}
 	return result;
@@ -786,7 +903,7 @@ vector<File> get_filefd_list(const vector<mfcslib::string_type>& file_list) {
 int main() {
 	socket_type                usocket{};
 	vector<sft_respond_struct> all_hosts;
-	int                        continue_current_mode = 0;
+	int                        mode = 0;
 
 	locale::global(locale("en_US.UTF-8"));
 #ifdef __unix__
@@ -803,33 +920,39 @@ int main() {
 	create_udp_socket(usocket);
 	while (true) {
 	start:
-		if (choose_working_mode()) { // Transfer mode
-			vector<File> file_fds;
-			tcp_socket   tfd;
-			char         choice = 0;
-			socket_type  tsocket{};
-			string       file_name;
+		mode = choose_working_mode();
+		if (mode) { // Transfer mode
+			vector<tuple<File, string>> filefds_paths;
+			vector<string> folder_paths;
+			tcp_socket     tfd;
+			char           choice = 0;
+			socket_type    tsocket{};
+			string         file_name;
 
 		choose:
 #ifdef __unix__
 			vector<string_type> file_list;
-			cout << "Please input the path of files, separated by spaces: ";
+			cout << "Please input the path of files or folders"
+					", separated by spaces: ";
 			while (cin >> file_name) {
+				if (file_name.back() == '/') {
+					file_name.pop_back();
+				}
 				file_list.emplace_back(file_name);
 				if (cin.peek() == '\n') {
 					break;
 				}
 			}
-			file_fds = get_filefd_list(file_list);
-			if (file_fds.empty()) {
+			filefds_paths = get_filefd_list(file_list);
+			if (filefds_paths.empty()) {
 				std::cerr << "Please try again." << endl;
 				goto choose;
 			}
 #else
-			auto retVal = OpenFileDialog();
-			if (retVal.has_value() && !retVal.value().empty()) {
-				file_fds = get_filefd_list(retVal.value());
-				if (file_fds.empty()) {
+			auto retVal = OpenFileOrFolderDialog(mode == 2);
+			if (retVal.has_value()) {
+				filefds_paths = get_filefd_list(retVal.value());
+				if (filefds_paths.empty()) {
 					std::cerr << "Please try again." << endl;
 					goto choose;
 				}
@@ -863,7 +986,7 @@ int main() {
 			}
 		send:
 			tfd = tcp_socket(tsocket.fd, tsocket.addr);
-			send_file(tfd, file_fds);
+			send_file(tfd, filefds_paths);
 		}
 		else { // Receive mode
 			tcp_socket  tfd;

@@ -5,15 +5,10 @@
 #include <fcntl.h>
 #include <format>
 #include <filesystem>
-#ifdef __cpp_lib_expected
 #include <expected>
-using std::expected;
-#else
-#include "tl/expected.hpp"
-using tl::expected;
-using tl::unexpected;
-#endif // __cpp_lib_expected
 #include "util.hpp"
+using std::expected;
+namespace fs = std::filesystem;
 #ifdef _WIN32
 #include <WinSock2.h>
 #include <WS2tcpip.h>
@@ -127,7 +122,7 @@ template <bool isSocket = false> class basic_io {
 		auto write(TypeArray<Byte>& buf, off_t pos, SizeType sz) {
 #ifdef DEBUG
 			auto len = buf.length();
-			if (pos >= len || sz > len || pos + sz > len)
+			if (len != 0 && (pos >= len || sz > len || pos + sz > len))
 				throw std::out_of_range("In write, pos or sz is out of range.");
 #endif // DEBUG
 			return this->write(buf.get_ptr() + pos, sz);
@@ -141,7 +136,7 @@ template <bool isSocket = false> class basic_io {
 		auto write_buf_pos(TypeArray<Byte>* buf, off_t pos, SizeType sz) {
 			return this->write(*buf, pos, sz);
 		}
-		auto write(const std::string_view& buf) {
+		auto write(std::string_view buf) {
 			return this->write(buf.data(), buf.length());
 		}
 		auto write_byte(Byte c) {
@@ -265,8 +260,8 @@ class File : public basic_io<false> {
 		path::string_type get_absolute() const {
 			return absolute(_file_path);
 		}
-		path::string_type filename() const {
-			return _file_path.filename();
+		string filename() const {
+			return _file_path.filename().string();
 		}
 		path::string_type get_type() const {
 			return _file_path.extension().c_str();
@@ -427,7 +422,7 @@ class tcp_socket : public raw_socket {
 			memset(&addrs, 0, len);
 			auto ret = ::accept(_fd, (sockaddr*)&addrs, &len);
 			if (ret < 0) {
-				return tl::unexpected(sockerrno);
+				return std::unexpected(sockerrno);
 			}
 			return tcp_socket(ret, addrs);
 		}
