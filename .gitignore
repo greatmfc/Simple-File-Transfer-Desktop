@@ -369,3 +369,8 @@ FodyWeavers.xsd
 /.clang-format
 /.clang-tidy
 /.clangd
+/sft-windows.vcxproj
+/sft-windows.vcxproj.filters
+/makefile
+/sft-windows.sln
+/sft-windows.vcxproj.user

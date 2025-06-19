@@ -33,9 +33,9 @@ using ssize_t   = signed long long;
 #define INVALID_SOCKET       -1
 #define SOCKET_ERROR         -1
 #define INVALID_HANDLE_VALUE -1
-using SOCKET    = int;
-using optval_t  = int;
-using HANDLE    = int;
+using SOCKET   = int;
+using optval_t = int;
+using HANDLE   = int;
 #endif //
 
 namespace mfcslib {
@@ -72,7 +72,7 @@ template <bool isSocket = false> class basic_io {
 			}
 			else {
 				SizeType bytes_read = 0;
-				bool      success =
+				bool     success =
 					ReadFile((HANDLE)_fd, buf, nbytes, &bytes_read, NULL);
 				return success ? bytes_read : -1;
 			}
@@ -110,7 +110,7 @@ template <bool isSocket = false> class basic_io {
 			}
 			else {
 				SizeType bytes_written = 0;
-				bool      success =
+				bool     success =
 					WriteFile((HANDLE)_fd, buf, nbytes, &bytes_written, NULL);
 				return success ? bytes_written : -1;
 			}
@@ -227,7 +227,7 @@ class File : public basic_io<false> {
 				flag |= O_TRUNC;
 			else
 				flag |= O_APPEND;
-			_fd            = ::open(path.c_str(), flag, 0644);
+			_fd = ::open(path.c_str(), flag, 0644);
 #endif
 			if (_fd == -1) {
 				return false;
@@ -483,8 +483,8 @@ class udp_socket : public raw_socket {
 		}
 		// Returns -EINVAL for invalid argument, -1 if fails, 0 for success.
 		ResType send_to(std::string_view ip, uint16_t port,
-						 std::string_view message) {
-			struct sockaddr_in target_udp_addr {};
+						std::string_view message) {
+			struct sockaddr_in target_udp_addr{};
 			int                ret = 0;
 
 			memset(&target_udp_addr, 0, sizeof(target_udp_addr));
@@ -501,41 +501,11 @@ class udp_socket : public raw_socket {
 			return ret;
 		}
 		ResType send_broadcast_message(uint16_t         port,
-										std::string_view message) {
+									   std::string_view message) {
 			return send_to("255.255.255.255", port, message);
 		}
 };
 
 }; // namespace mfcslib
-
-#ifdef __unix__
-std::vector<std::string> list_all_files_in_directory(const char* path) {
-	auto dir_d = opendir(path);
-	if (dir_d == nullptr) {
-		return {};
-	}
-	std::vector<std::string> res;
-	struct dirent*           ptr   = readdir(dir_d);
-	std::string              _path = path;
-	if (_path.back() != '/') {
-		_path += '/';
-	}
-	while ((ptr = readdir(dir_d)) != nullptr) {
-		if (strcmp(ptr->d_name, ".") == 0 || strcmp(ptr->d_name, "..") == 0) {
-			continue;
-		}
-		if (ptr->d_type == DT_REG) {
-			res.emplace_back(std::format("{}{}", _path, ptr->d_name));
-		}
-		else if (ptr->d_type == DT_DIR) {
-			auto son_dir = list_all_files_in_directory(ptr->d_name);
-			for (auto& file : son_dir) {
-				res.emplace_back(_path + file);
-			}
-		}
-	}
-	return res;
-}
-#endif
 
 #endif // !IO_HPP
