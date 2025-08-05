@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 # 项目配置
 project(Simple-File-Transfer-Desktop
-    VERSION 1.4.0
+    VERSION 1.5
     DESCRIPTION "Simple File Transfer Desktop Application"
     LANGUAGES CXX
 )
@@ -44,7 +44,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wformat=2
     )
     set(DEBUG_FLAGS -g -DDEBUG -fno-omit-frame-pointer)
-    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto -static)
+    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto)
     
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Clang编译器设置
@@ -56,7 +56,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         -Wshadow -Wunreachable-code
     )
     set(DEBUG_FLAGS -g -DDEBUG -fno-omit-frame-pointer -fsanitize-address-use-after-scope)
-    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto -static)
+    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto)
     
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # MSVC编译器设置
@@ -67,7 +67,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         /wd4251 /wd4275  # 禁用一些DLL相关警告
     )
     set(DEBUG_FLAGS /Zi /Od /DDEBUG /RTC1 /MP)
-    set(RELEASE_FLAGS /O2 /Ob2 /DNDEBUG /GL /MT /MP)
+    set(RELEASE_FLAGS /O2 /Ob2 /DNDEBUG /GL /MP)
     
     # MSVC特定设置
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
@@ -100,6 +100,10 @@ else()
     add_compile_options(${COMMON_WARNING_FLAGS} ${RELEASE_FLAGS})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         add_link_options(/LTCG)  # 链接时代码生成
+    else()
+        add_link_options(
+            #-static
+        )
     endif()
 endif()
 
@@ -123,7 +127,9 @@ elseif(APPLE)
     find_library(IOKIT_LIBRARY IOKit)
     set(PLATFORM_LIBS ${COCOA_LIBRARY} ${IOKIT_LIBRARY})
 elseif(UNIX)
-    set(PLATFORM_LIBS pthread dl)
+    set(PLATFORM_LIBS ssl crypto dl pthread
+    #z zstd
+    )
 endif()
 
 # 查找线程库（跨平台）
@@ -131,15 +137,17 @@ find_package(Threads REQUIRED)
 
 # 源文件配置
 set(SOURCES
-    main.cpp
-    main_functions.cpp
+    src/main.cpp
+    src/main_functions.cpp
+    src/aes-gcm.cpp
+    src/io.cpp
     # 在这里添加其他通用源文件
 )
 
 # 平台特定的源文件
 if(WIN32)
     list(APPEND SOURCES
-        win32actions.cpp
+        src/win32actions.cpp
         # 在这里添加其他Windows特定的源文件
     )
     message(STATUS "Added Windows-specific source files")

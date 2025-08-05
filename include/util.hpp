@@ -1,23 +1,19 @@
 #ifndef UTIL_HPP
 #define UTIL_HPP
 #include <array>
-#include <chrono>
-#include <cstring>
 #include <iostream>
-#include <ranges>
-#include <unordered_map>
 #include <vector>
-#include <format>
 #include <algorithm>
+#include <format>
 using Byte = char;
-namespace sc = std::chrono;
-using namespace std::chrono_literals;
 namespace mfcslib {
-	template <typename Type>
+template <typename Type = Byte>
 	class TypeArray {
-		using SizeType = size_t;
 
 	public:
+		using size_type = size_t;
+		using value_type=Type;
+
 		TypeArray() = delete;
 		TypeArray(const TypeArray& arg) = delete;
 		constexpr ~TypeArray() {
@@ -60,13 +56,16 @@ namespace mfcslib {
 		constexpr void empty_array() {
 			fill(0, 0, m_SIZE);
 		}
-		constexpr SizeType length() {
+		constexpr size_type size() const{
 			return m_SIZE;
 		}
 		constexpr void destroy() {
 			this->~TypeArray();
 		}
-		constexpr auto get_ptr() {
+		constexpr auto data() {
+			return m_DATA;
+		}
+		constexpr const auto data() const{
 			return m_DATA;
 		}
 		constexpr auto to_string() {
@@ -80,7 +79,7 @@ namespace mfcslib {
 
 	private:
 		Type* m_DATA = nullptr;
-		SizeType m_SIZE = 0;
+		size_type m_SIZE = 0;
 	};
 	template <typename T = Byte> auto make_array(size_t sz) {
 		return TypeArray<T>(sz);
@@ -105,65 +104,6 @@ namespace mfcslib {
 		return;
 	}
 
-	template <uint16_t N> class Range {
-	public:
-		constexpr Range() {
-			for (uint16_t i = 0; i < N; ++i) {
-				data[i] = i;
-			}
-		}
-		constexpr Range(intmax_t start) {
-			for (auto& d : data) {
-				d = start++;
-			}
-		}
-		constexpr ~Range() = default;
-
-		constexpr auto begin() {
-			return data;
-		}
-		constexpr auto end() {
-			return &data[N];
-		}
-
-	private:
-		intmax_t data[N];
-	};
-
-	template <typename T> class timer {
-	public:
-		timer() = default;
-		timer(const sc::seconds& time) : _interval(time) {
-		}
-		~timer() = default;
-		void setup_interval(const sc::seconds& time) {
-			_interval = time;
-		}
-		void insert_or_update(T value) {
-			_data[value] = sc::system_clock::now();
-		}
-		void erase_value(T value) {
-			_data.erase(value);
-		}
-		std::vector<T> clear_expired() {
-			auto           cur_time = sc::system_clock::now();
-			std::vector<T> res;
-			for (auto ite = _data.begin(); ite != _data.end();) {
-				if (cur_time - ite->second >= _interval) {
-					res.emplace_back(ite->first);
-					_data.erase(ite++);
-					continue;
-				}
-				break;
-			}
-			return res;
-		}
-
-	private:
-		std::unordered_map<T, sc::time_point<sc::system_clock>> _data;
-		sc::seconds _interval = 300s;
-	};
-
 	constexpr std::vector<std::string_view> str_split(std::string_view str,std::string_view delims) {
 		std::vector<std::string_view> output;
 		for (auto first = str.data(), second = str.data(),
@@ -176,32 +116,5 @@ namespace mfcslib {
 		}
 		return output;
 	}
-
-	template <typename P, typename T>
-	constexpr int64_t strchr_c(const P* str, const T ch) {
-		int64_t idx = 0;
-		while (*str) {
-			if (*str == ch)
-				return idx;
-			++str;
-			++idx;
-		}
-		return -1;
-	}
-
-	constexpr inline char _single_hex_to_char(char h) {
-		if (h >= '0' && h <= '9')
-			return h - 48;
-		else
-			return h - 55;
-	}
-	constexpr inline char hex_str_to_char(const std::string_view& str) {
-		return char((_single_hex_to_char(str[0]) << 4) +
-			_single_hex_to_char(str[1]));
-	}
-
 } // namespace mfcslib
-#define _var const auto& s
-#define _in :
-#define _range(_) mfcslib::Range<(uint16_t)_>()
 #endif // !UTIL_HPP
