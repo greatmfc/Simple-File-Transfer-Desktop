@@ -374,3 +374,5 @@ FodyWeavers.xsd
 /makefile
 /sft-windows.sln
 /sft-windows.vcxproj.user
+
+/build
