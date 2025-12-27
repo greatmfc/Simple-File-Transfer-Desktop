@@ -8,14 +8,15 @@ An interactive console application that supports both receiving and sending spec
 - Cross-platform (Windows/Linux/Android)
 - Automatically search for available SFT clients in local network
 - Send or receive multiple files or folders (Android version does not support sending folders yet)
-- Supports encrypted data transmission using AES-128-GCM (Require both side holding a same password)
+- Supports asymmetric encrypted data transmission.
 - High transfer speed
 - Simple and easy to use
 
 # Deployment
 
 1. Use the compiled binary executable file in Release page.
-2. On Windows, it will need Visual Studio 2022 to build the project.
+2. This project uses package manager [vcpkg](https://github.com/microsoft/vcpkg) and third party library [libsodium](https://doc.libsodium.org/). You will need to install [libsodium](https://doc.libsodium.org/) through [vcpkg](https://github.com/microsoft/vcpkg) first before carrying on the following steps.
+3. On Windows, it will need Visual Studio 2022 to build the project.
 
 ```bash
 git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
@@ -26,10 +27,9 @@ cmake .. # use '-DCMAKE_BUILD_TYPE=Debug' if you wish to debug it
 
 Then open the solution file **Simple-File-Transfer-Desktop.sln** under **build/**, switch to Release mode and build it in Visual Studio.
 
-3. On Linux, install openssl and git clone then make:
+4. On Linux, install openssl and git clone then make:
 
 ```bash
-sudo apt install libssl-dev # install 'zlib1g-dev libzstd-dev' if static-link is needed
 git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
 cd Simple-File-Transfer-Desktop
 mkdir build && cd build

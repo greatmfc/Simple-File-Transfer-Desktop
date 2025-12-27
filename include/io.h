@@ -7,6 +7,8 @@
 #include "util.hpp"
 
 #ifdef _WIN32
+#include <WinSock2.h>
+#include <bcrypt.h>
 #pragma comment(lib, "ws2_32.lib")
 #define sockclose(s) ::closesocket(s)
 #define sockerrno    GetLastError()

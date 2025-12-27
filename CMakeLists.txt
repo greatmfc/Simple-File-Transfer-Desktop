@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
+set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 项目配置
 project(Simple-File-Transfer-Desktop
-    VERSION 1.5
+    VERSION 1.6
     DESCRIPTION "Simple File Transfer Desktop Application"
     LANGUAGES CXX
 )
@@ -11,6 +13,8 @@ project(Simple-File-Transfer-Desktop
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+add_definitions("-DVERSION=${PROJECT_VERSION}")
 
 # 设置默认构建类型
 if(NOT CMAKE_BUILD_TYPE)
@@ -44,7 +48,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wformat=2
     )
     set(DEBUG_FLAGS -g -DDEBUG -fno-omit-frame-pointer)
-    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto)
+    set(RELEASE_FLAGS -O2 -march=native -DNDEBUG -flto)
     
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Clang编译器设置
@@ -56,7 +60,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
         -Wshadow -Wunreachable-code
     )
     set(DEBUG_FLAGS -g -DDEBUG -fno-omit-frame-pointer -fsanitize-address-use-after-scope)
-    set(RELEASE_FLAGS -O3 -march=native -DNDEBUG -flto)
+    set(RELEASE_FLAGS -O2 -march=native -DNDEBUG -flto)
     
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     # MSVC编译器设置
@@ -67,7 +71,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         /wd4251 /wd4275  # 禁用一些DLL相关警告
     )
     set(DEBUG_FLAGS /Zi /Od /DDEBUG /RTC1 /MP)
-    set(RELEASE_FLAGS /O2 /Ob2 /DNDEBUG /GL /MP)
+    set(RELEASE_FLAGS /O2 /Ob2 /DNDEBUG /GL /MP /MT)
     
     # MSVC特定设置
     add_definitions(-D_CRT_SECURE_NO_WARNINGS)
@@ -75,8 +79,8 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     add_definitions(-DWIN32_LEAN_AND_MEAN)
     
     # Unicode支持 - 强制使用宽字符API
-    add_definitions(-DUNICODE)
-    add_definitions(-D_UNICODE)
+    #add_definitions(-DUNICODE)
+    #add_definitions(-D_UNICODE)
     
     # 设置字符集为Unicode
     set(CMAKE_VS_PLATFORM_TOOLSET_HOST_ARCHITECTURE x64)
@@ -100,6 +104,9 @@ else()
     add_compile_options(${COMMON_WARNING_FLAGS} ${RELEASE_FLAGS})
     if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         add_link_options(/LTCG)  # 链接时代码生成
+        #add_link_options(/WHOLEARCHIVE)  # 链接时代码生成
+        add_definitions(-DSODIUM_STATIC=1)
+        add_definitions(-DSODIUM_EXPORT=)
     else()
         add_link_options(
             #-static
@@ -125,21 +132,23 @@ if(WIN32)
 elseif(APPLE)
     find_library(COCOA_LIBRARY Cocoa)
     find_library(IOKIT_LIBRARY IOKit)
-    set(PLATFORM_LIBS ${COCOA_LIBRARY} ${IOKIT_LIBRARY})
+    #set(PLATFORM_LIBS ${COCOA_LIBRARY} ${IOKIT_LIBRARY})
 elseif(UNIX)
-    set(PLATFORM_LIBS ssl crypto dl pthread
+    set(PLATFORM_LIBS 
+    #ssl crypto dl pthread
     #z zstd
     )
 endif()
 
 # 查找线程库（跨平台）
-find_package(Threads REQUIRED)
+find_package(
+    unofficial-sodium CONFIG 
+    REQUIRED)
 
 # 源文件配置
 set(SOURCES
     src/main.cpp
     src/main_functions.cpp
-    src/aes-gcm.cpp
     src/io.cpp
     # 在这里添加其他通用源文件
 )
@@ -177,9 +186,9 @@ include_directories(
 add_executable(${PROJECT_NAME} ${SOURCES})
 
 # 链接库
-target_link_libraries(${PROJECT_NAME} 
-    PRIVATE 
-    Threads::Threads
+target_link_libraries(${PROJECT_NAME} PRIVATE
+    unofficial-sodium::sodium
+    #Threads::Threads
     ${PLATFORM_LIBS}
 )
 

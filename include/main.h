@@ -1,15 +1,14 @@
-#include "aes-gcm.h"
 #include "io.h"
 #include "sftclass.hpp"
-#include "SecureContainer.h"
+#include <print>
 
-#define SERVER_PORT 7897
+#define SERVER_PORT 41541
 #define MAXARRSZ    2'048'000'000ull // 2GB
-#define VERSION     1.5f
-#define CHUNK_SIZE  20'000'000ull // 20MB
+#ifndef VERSION
+#define VERSION 0.1f
+#endif
+#define CHUNK_SIZE 20'000'000ull // 20MB
 constexpr size_t bufSize = MAXARRSZ / 2;
-constexpr auto additional_length = AESGCM_IV_SIZE + AESGCM_TAG_SIZE;
-constexpr size_t chunkBufSize = (CHUNK_SIZE / 2) + additional_length;
 
 using mfcslib::File;
 using mfcslib::string_type;
@@ -46,11 +45,10 @@ void receive_file(tcp_socket& target);
 int  manual_connect_to_peer(socket_type& tcp);
 
 vector<tuple<File, string>>
-	get_filefd_list(const vector<string_type>& path_list);
+	 get_filefd_list(const vector<string_type>& path_list);
 
-int choose_working_mode();
+int  choose_working_mode(int specified_mode = -1);
 
-bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
-				 SecureContainer<char>* password);
+bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files);
 
-void receive_file_s(tcp_socket& target, SecureContainer<char>* password);
+void receive_file_s(tcp_socket& target);

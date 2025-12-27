@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <future>
 #include "main.h"
+#include "asymCrypt.hpp"
 #ifdef __unix__
 #include <cassert>
 #include <arpa/inet.h>
@@ -43,7 +44,9 @@ using namespace std;
 using namespace mfcslib;
 
 static sft_header sh;
-bool              enable_encryption = false;
+bool              enable_encryption = true;
+constexpr auto    additional_length = AsymCrypt_TAG_SIZE + AsymCrypt_NONCE_SIZE;
+constexpr size_t  chunkBufSize      = (CHUNK_SIZE / 2) + additional_length;
 #ifdef DEBUG
 string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
 					 "built in: {1} {2}. Developed by greatmfc. DEBUG\033[0m",
@@ -54,18 +57,18 @@ string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
 					 VERSION, __DATE__, __TIME__);
 #endif // DEBUG
 
-uint16_t          generate_random_port() {
-    std::random_device                      r;
-    std::default_random_engine              e1(r());
-    std::uniform_int_distribution<uint16_t> uniform_dist(9000, 65535);
-    return uniform_dist(e1);
+uint16_t generate_random_port() {
+	std::random_device                      r;
+	std::default_random_engine              e1(r());
+	std::uniform_int_distribution<uint16_t> uniform_dist(9000, 65535);
+	return uniform_dist(e1);
 }
 
 // Initialize given socket_type with broadcast option,
 // returns 0 on success, -1 if fail.
 int create_udp_socket(socket_type& local_udp_host, const char* buf) {
-	int      iRet = -1;
-	optval_t opt  = 1;
+	int      iRet     = -1;
+	optval_t opt      = 1;
 	local_udp_host.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (local_udp_host.fd == -1) {
 		perror("socket error");
@@ -109,10 +112,10 @@ bad:
 // Initialize the given socket_type, returns 0 on success, -1 if fails.
 int create_tcp_socket(socket_type& local_tcp_host,
 					  bool         use_random_tcp_port = false) {
-	int                     tcp_fd = -1;
-	char                    flag   = 1;
-	int                     ret    = 0;
-	sockaddr_in             ip_port{};
+	int         tcp_fd = -1;
+	char        flag   = 1;
+	int         ret    = 0;
+	sockaddr_in ip_port{};
 
 	memset(&ip_port, 0, sizeof(sockaddr_in));
 	tcp_fd                  = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
@@ -226,11 +229,14 @@ ResType search_for_sft_peers(const socket_type& local_host, int retry,
 	return all_hosts.size();
 }
 
-int choose_working_mode() {
+int choose_working_mode(int specified_mode) {
 	int choice = 0;
 
 	// cout << "\033c";
 	cout << info << endl;
+	if (specified_mode != -1) {
+		return specified_mode;
+	}
 	cout << "\nChoose a mode for program to work:\n"
 			"0. Receive.\t"
 #ifdef _WIN32
@@ -241,7 +247,7 @@ int choose_working_mode() {
 #endif
 		 << (enable_encryption ? "3. Disable safe transmission.\t"
 							   : "3. Enable safe transmission.\t")
-		 << "4. Reset encryption key.\t" << endl;
+		 << endl;
 	cout << "Enter your choice: ";
 	cin >> choice;
 	return choice;
@@ -268,13 +274,14 @@ int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
 	while (true) {
 		cout << "Enter your choice: ";
 		cin >> count;
-		if (count <= all_hosts.size() && count > 0) {
+		if (count <= all_hosts.size()) {
 			cout << format("Your choice is: {}\n",
 						   all_hosts[--count].peer_name);
 			break;
 		}
 		else {
-			cout << "Invalid choice!" << endl;
+			cout << "Invalid choice! Please retry." << endl;
+			return -1;
 		}
 	}
 
@@ -407,6 +414,7 @@ bool send_file(tcp_socket& target, const vector<tuple<File, string>>& files) {
 	size_t                 file_sz = 0, bytes_left = 0;
 	ResType                ret     = -1;
 	string                 request = "sft1.1/FIL";
+	mfcslib::progress_bar_with_speed(0, 0, true);
 
 	for (const auto& [fd, file_path] : files) {
 		if (!fd.is_open()) { // directory
@@ -476,7 +484,7 @@ bool send_file(tcp_socket& target, const vector<tuple<File, string>>& files) {
 				}
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar(have_send, file_sz);
+				mfcslib::progress_bar_with_speed(have_send, file_sz);
 			}
 		}
 		else {
@@ -513,7 +521,7 @@ bool send_file(tcp_socket& target, const vector<tuple<File, string>>& files) {
 				}
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar(file_sz - bytes_left, file_sz);
+				mfcslib::progress_bar_with_speed(file_sz - bytes_left, file_sz);
 				[[unlikely]] if (have_send == bufSize) {
 					read_res.wait();
 					ret = read_res.get();
@@ -547,6 +555,7 @@ void receive_file(tcp_socket& target) {
 	size_t                 bytesLeft     = 0;
 	ResType                ret           = -1;
 
+	mfcslib::progress_bar_with_speed(0, 0, true);
 	// target.set_blocking();
 	target.set_nonblocking();
 	while (true) {
@@ -641,7 +650,7 @@ void receive_file(tcp_socket& target) {
 				}
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar(bytesReceived, sizeOfFile);
+				mfcslib::progress_bar_with_speed(bytesReceived, sizeOfFile);
 			}
 			if (bytesLeft > 0) {
 				break;
@@ -677,7 +686,8 @@ void receive_file(tcp_socket& target) {
 				}
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar(sizeOfFile - bytesLeft, sizeOfFile);
+				mfcslib::progress_bar_with_speed(sizeOfFile - bytesLeft,
+												 sizeOfFile);
 				[[unlikely]] if (bytesReceived == bufSize) {
 					[[likely]] if (bufferidx != 1) {
 						write_res.wait();
@@ -860,9 +870,9 @@ get_filefd_list(const vector<string_type>& path_list) {
 	return result;
 }
 
-ssize_t read_and_encrypt(const File& file,  AesGcm& aes, vector<Byte>* buf) {
+ssize_t read_and_encrypt(const File& file, AsymCrypt& aes, vector<Byte>* buf) {
 	auto read_buf = mfcslib::make_array<Byte>(chunkBufSize - additional_length);
-	auto ret = file.read(read_buf);
+	auto ret      = file.read(read_buf);
 	if (ret == -1) {
 		perror("Fail to read file");
 		return ret;
@@ -879,18 +889,38 @@ ssize_t read_and_encrypt(const File& file,  AesGcm& aes, vector<Byte>* buf) {
 }
 
 // Note that requests are also encrypted.
-bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
-				 SecureContainer<char>* password) {
+bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files) {
 	[[maybe_unused]] off_t off       = 0;
 	size_t                 have_send = 0;
 	char                   code      = -1;
 	size_t                 file_sz = 0, bytes_left = 0, total_bytes_to_send = 0;
-	ResType                ret     = -1;
+	ResType                ret = -1;
+	AsymCrypt              aes;
 	string                 request = "sft1.1/FIL";
-	AesGcm                 aes;
-	password->access([&](std::string_view sv) { 
-		aes = {sv, {}};
-	});
+	std::array<char, 13 + AsymCrypt_KEY_SIZE> handshake_request{};
+	memcpy(handshake_request.data(), "sft1.2/PUB/", 11);
+	memcpy(handshake_request.data() + 11, aes.m_pub_key.data(),
+		   aes.m_pub_key.size());
+	*(handshake_request.rbegin())     = '\n';
+	*(handshake_request.rbegin() + 1) = '\r';
+	mfcslib::progress_bar_with_speed(0, 0, true);
+
+	std::println("\nThe hexadecimal format of local public key is:{}",
+				 aes.get_hex_pub_key());
+	target.write(handshake_request);
+	vector<char> received_pubkey(handshake_request.size() + 1);
+	ret = target.read(received_pubkey);
+	if (ret <= 0) {
+		std::println(stderr, "Cannot receive public key");
+		return -1;
+	}
+	memcpy(aes.m_other_pub_key.data(), received_pubkey.data() + 11,
+		   AsymCrypt_KEY_SIZE);
+	std::println("The hexadecimal format of other public key is:{}",
+				 bin_to_hex_string(aes.m_other_pub_key.data(),
+								   aes.m_other_pub_key.size()));
+	std::println("Consider abort the operation if local public key is not "
+				 "matched to other host's other public key.");
 
 	for (const auto& [fd, file_path] : files) {
 		if (!fd.is_open()) { // directory
@@ -901,7 +931,7 @@ bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
 		}
 	}
 	auto encrypted_request = aes.encrypt(request.data(), request.size());
-	target.write((const char*)aes.salt_value.data(), SALT_SIZE);
+	// target.write((const char*)aes.salt_value.data(), SALT_SIZE);
 	target.write(encrypted_request);
 	target.write(string_view("\r\n"));
 	code = target.read_byte();
@@ -916,7 +946,7 @@ bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
 		}
 		std::cout << "Sending file: " << file_path << '\n';
 
-		file_sz    = file.size();
+		file_sz = file.size();
 		total_bytes_to_send =
 			file_sz +
 			ceil(double(file_sz) / (chunkBufSize - additional_length)) *
@@ -925,9 +955,8 @@ bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
 		have_send  = 0;
 
 		if (file_sz <= CHUNK_SIZE) {
-			auto read_buf =
-				mfcslib::make_array<Byte>(file_sz);
-			ret      = file.read(read_buf);
+			auto read_buf = mfcslib::make_array<Byte>(file_sz);
+			ret           = file.read(read_buf);
 			if (ret == -1) {
 				perror("Fail to read file");
 				return false;
@@ -957,18 +986,19 @@ bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
 				}
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar(have_send, total_bytes_to_send);
+				mfcslib::progress_bar_with_speed(have_send,
+												 total_bytes_to_send);
 			}
 		}
 		else {
-			int              bufferidx = 1;
-			vector<Byte>     buffer1;
-			vector<Byte>     buffer2;
-			future<ssize_t>  read_res;
-			size_t           num    = 0;
-			vector<Byte>*    buffer = &buffer1;
+			int             bufferidx = 1;
+			vector<Byte>    buffer1;
+			vector<Byte>    buffer2;
+			future<ssize_t> read_res;
+			size_t          num    = 0;
+			vector<Byte>*   buffer = &buffer1;
 
-			ret                     = read_and_encrypt(file, aes, buffer);
+			ret                    = read_and_encrypt(file, aes, buffer);
 			if (ret == -1) {
 				perror("Fail to read file");
 				goto end;
@@ -994,7 +1024,8 @@ bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files,
 				}
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar(total_bytes_to_send - bytes_left, total_bytes_to_send);
+				mfcslib::progress_bar_with_speed(
+					total_bytes_to_send - bytes_left, total_bytes_to_send);
 				[[unlikely]] if (have_send == chunkBufSize) {
 					read_res.wait();
 					ret = read_res.get();
@@ -1022,7 +1053,8 @@ end:
 	return true;
 }
 
-ssize_t decrypt_and_write(File& file, AesGcm& aes, const TypeArray<Byte>* buf) {
+ssize_t decrypt_and_write(File& file, AsymCrypt& aes,
+						  const TypeArray<Byte>* buf) {
 	try {
 		auto res = aes.decrypt(buf->data(), buf->size());
 		return file.write(res);
@@ -1033,16 +1065,17 @@ ssize_t decrypt_and_write(File& file, AesGcm& aes, const TypeArray<Byte>* buf) {
 	return -1;
 }
 
-void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
+void receive_file_s(tcp_socket& target) {
 	std::array<char, 1024> buffer{};
 	vector<char>           request, encrypted_request;
 	size_t                 sizeOfFile    = 0;
 	size_t                 bytesReceived = 0;
 	size_t                 bytesLeft = 0, total_bytes_to_receive = 0;
-	ResType                ret           = -1;
-	AesGcm                 aes;
+	ResType                ret = -1;
+	AsymCrypt              aes;
 
-	// target.set_blocking();
+// target.set_blocking();
+receive:
 	while (true) {
 		buffer.fill(0);
 		ret = target.read(buffer);
@@ -1064,19 +1097,35 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 			return;
 		}
 	}
+	// If the other side is safe transmission
+	if (encrypted_request[7] == 'P' && encrypted_request[8] == 'U' &&
+		encrypted_request[9] == 'B') {
+		std::println("The hexadecimal format of local public key is:{}",
+					 aes.get_hex_pub_key());
+		memcpy(aes.m_other_pub_key.data(), encrypted_request.data() + 11,
+			   AsymCrypt_KEY_SIZE);
+		std::array<char, 13 + AsymCrypt_KEY_SIZE> handshake_request{};
+		memcpy(handshake_request.data(), "sft1.2/PUB/", 11);
+		memcpy(handshake_request.data() + 11, aes.m_pub_key.data(),
+			   aes.m_pub_key.size());
+		*(handshake_request.rbegin())     = '\n';
+		*(handshake_request.rbegin() + 1) = '\r';
+
+		std::println("The hexadecimal format of other public key is:{}",
+					 bin_to_hex_string(aes.m_other_pub_key.data(),
+									   aes.m_other_pub_key.size()));
+		target.write(handshake_request);
+		encrypted_request.clear();
+		std::println("Consider abort the operation if local public key is not "
+					 "matched to other host's other public key.");
+		goto receive;
+	}
 
 	try {
-		std::array<unsigned char, SALT_SIZE> salt;
-		std::memcpy(salt.data(), encrypted_request.data(), SALT_SIZE);
-		password->access([&](std::string_view sv) { 
-		    aes = {sv, salt}; 
-		});
-		request = aes.decrypt(encrypted_request.data() + SALT_SIZE,
-							  encrypted_request.size() - SALT_SIZE);
+		request =
+			aes.decrypt(encrypted_request.data(), encrypted_request.size());
 	} catch (const std::exception& e) {
-		cerr << "Cannot decrypt request from the other side. Please make sure "
-				"safe transmission is enabled or both sides are using the same "
-				"key. "
+		cerr << "Cannot decrypt request from the other side. "
 			 << "Error message: " << e.what() << endl;
 		return;
 	}
@@ -1086,14 +1135,20 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 	cout << "Receive request: " << request.data() << endl;
 #endif
 	target.set_nonblocking();
+	mfcslib::progress_bar_with_speed(0, 0, true);
 	for (size_t i = SFT_FIL_NAME_START; i < res.size() - 1; i += 2) {
 		string file_name = "./" + string(res[i]);
 		from_chars(res[i + 1].data(), res[i + 1].data() + res[i + 1].size(),
 				   sizeOfFile);
-		total_bytes_to_receive =
-			sizeOfFile + ceil(static_cast<double>(sizeOfFile) /
-							  (chunkBufSize - additional_length)) *
-							 additional_length;
+		if (sizeOfFile <= CHUNK_SIZE) {
+			total_bytes_to_receive = sizeOfFile + additional_length;
+		}
+		else {
+			total_bytes_to_receive =
+				sizeOfFile + ceil(static_cast<double>(sizeOfFile) /
+								  (chunkBufSize - additional_length)) *
+								 additional_length;
+		}
 		bytesLeft     = total_bytes_to_receive;
 		bytesReceived = 0;
 #ifdef __unix__
@@ -1118,7 +1173,7 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 		if (!file_output_stream.open(true, File::iomode::WRONLY)) {
 			perror("Fail to create file");
 			while (bytesLeft > 0) {
-				ret = target.read(buffer.data(), min(bytesLeft, buffer.size())); 
+				ret = target.read(buffer.data(), min(bytesLeft, buffer.size()));
 				[[likely]] if (ret == SOCKET_ERROR) {
 					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
 						perror("Error while trying to receive from peer");
@@ -1154,7 +1209,8 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 				}
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar(bytesReceived, total_bytes_to_receive);
+				mfcslib::progress_bar_with_speed(bytesReceived,
+												 total_bytes_to_receive);
 			}
 			if (bytesLeft > 0) {
 				break;
@@ -1167,8 +1223,8 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 			}
 		}
 		else {
-			auto             buffer1     = mfcslib::make_array<Byte>(chunkBufSize);
-			auto             buffer2     = mfcslib::make_array<Byte>(chunkBufSize);
+			auto             buffer1 = mfcslib::make_array<Byte>(chunkBufSize);
+			auto             buffer2 = mfcslib::make_array<Byte>(chunkBufSize);
 			size_t           bytesRemain = bytesLeft;
 			auto             num         = chunkBufSize;
 			int              bufferidx   = 1;
@@ -1192,8 +1248,8 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 				}
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar(total_bytes_to_receive - bytesLeft,
-									  total_bytes_to_receive);
+				mfcslib::progress_bar_with_speed(
+					total_bytes_to_receive - bytesLeft, total_bytes_to_receive);
 				[[unlikely]] if (bytesReceived == chunkBufSize) {
 					[[likely]] if (bufferidx != 1) {
 						write_res.wait();
@@ -1223,4 +1279,3 @@ void receive_file_s(tcp_socket& target, SecureContainer<char>* password) {
 	}
 	target.set_blocking();
 }
-
