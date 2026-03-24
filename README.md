@@ -1,48 +1,130 @@
 # Introduction [![Test](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions)
 
+**Version 2.0** - Modern build system with secure encrypted sessions
+
 An interactive console application that supports both receiving and sending specified file from and to other Simple-File-Transfer-Desktop/Android hosts.
 
 # Features
 
-- End to End data transmission
-- Cross-platform (Windows/Linux/Android)
-- Automatically search for available SFT clients in local network
-- Send or receive multiple files or folders (Android version does not support sending folders yet)
-- Supports asymmetric encrypted data transmission.
-- High transfer speed
-- Simple and easy to use
+- **End-to-End Encrypted Transmission**: XChaCha20-Poly1305 authenticated encryption with libsodium
+- **Secure Handshake Protocol**: Cryptographic authentication and key exchange
+- **Modern Build System**: CMake with vcpkg integration and cross-platform presets
+- **Cross-platform** (Windows/Linux/macOS/Android)
+- **Automatic Peer Discovery**: Automatically search for available SFT clients in local network via UDP broadcast
+- **Batch File Transfer**: Send or receive multiple files or folders (Android version does not support sending folders yet)
+- **Asymmetric Encryption**: Public-key cryptography for secure session establishment
+- **Command-line Interface**: One-time transfer/receive modes with command-line options
+- **Interactive & Drag-and-Drop**: Interactive menu on Windows with file/folder dialog support
+- **High Performance**: Multi-threaded transfer with configurable chunk sizes
+- **Coroutine-based Async I/O**: Non-blocking network operations using C++20 coroutines
+- **Unified Error Handling**: Type-safe error propagation with std::expected
 
 # Deployment
 
-1. Use the compiled binary executable file in Release page.
-2. This project uses package manager [vcpkg](https://github.com/microsoft/vcpkg) and third party library [libsodium](https://doc.libsodium.org/). You will need to install [libsodium](https://doc.libsodium.org/) through [vcpkg](https://github.com/microsoft/vcpkg) first before carrying on the following steps.
-3. On Windows, it will need Visual Studio 2022 to build the project.
+## Prerequisites
+
+- **[vcpkg](https://github.com/microsoft/vcpkg)**: Package manager for dependencies
+- **libsodium**: Encryption library (automatically installed via vcpkg)
+- **CMake 3.25+**: Build system generator
+- **C++23 Compatible Compiler**: GCC 14+, Clang 18+, MSVC 2022 17.0+
+
+## Quick Start
+
+### Using CMake Presets (Recommended)
+
+The project includes pre-configured CMake presets for all major platforms:
 
 ```bash
 git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
 cd Simple-File-Transfer-Desktop
-mkdir build && cd build
-cmake .. # use '-DCMAKE_BUILD_TYPE=Debug' if you wish to debug it
+
+# Configure using a preset (choose based on your platform)
+cmake --preset linux-release          # Linux with GCC
+cmake --preset linux-clang-release    # Linux with Clang
+cmake --preset x64-release            # Windows 64-bit with MSVC
+cmake --preset macos-release          # macOS with AppleClang
+
+# Build
+cmake --build --preset <preset-name>
+
+# Run the executable
+./build/bin/simple-file-transfer
 ```
 
-Then open the solution file **Simple-File-Transfer-Desktop.sln** under **build/**, switch to Release mode and build it in Visual Studio.
-
-4. On Linux, install openssl and git clone then make:
+### Manual Configuration
 
 ```bash
 git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
 cd Simple-File-Transfer-Desktop
 mkdir build && cd build
-cmake .. # use '-DCMAKE_BUILD_TYPE=Debug' if you wish to debug it
-make -j
-./bin/simple-file-transfer ./first_to_send/ second_to_send.txt ...
-# add paths of files or folders as arguments to transfer, or leave it empty
+
+# Configure (set VCPKG_ROOT if vcpkg is not in default location)
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+
+# Build
+cmake --build . --config Release -j
+
+# Run
+./bin/simple-file-transfer
+```
+
+## Platform-Specific Notes
+
+### Windows
+- **Visual Studio 2022** or **Ninja** with MSVC/Clang-CL
+- First run requires administrator permission to add firewall exception
+- Select network interface on startup for peer discovery
+- Drag-and-drop files onto executable supported
+- Presets available: `x64-release`, `x64-debug`, `x64-release-profiling`, `x64-clang-release`, `x86-release`
+
+### Linux
+- **GCC 14+** or **Clang 18+** recommended
+- Install system dependencies: `sudo apt-get install build-essential cmake`
+- No special privileges required
+- Presets available: `linux-release`, `linux-debug`, `linux-release-profiling`, `linux-clang-release`
+
+### macOS
+- **Xcode Command Line Tools** required
+- AppleClang (Xcode 14+ recommended)
+- Presets available: `macos-release`, `macos-debug`
+
+## Usage Examples
+
+```bash
+# Interactive mode (default)
+./simple-file-transfer
+
+# One-time receive mode
+./simple-file-transfer -r
+
+# One-time transfer mode with files
+./simple-file-transfer -t file1.txt folder/
+
+# Direct connection to specific host
+./simple-file-transfer -t file1.txt -a 192.168.1.100:10013
+
+# Show help
+./simple-file-transfer -h
 ```
 
 # Notes
 
-- On Windows, the program requires administrator permission to add a firewall exception when being launched for the first time.
-- For every startup, you need to select a network first in order to find the other SFT hosts due to the limitation on Windows.
+## Security
+- **Trust-on-First-Use**: Unknown host fingerprints require manual approval on first connection
+- **Key Storage**: Cryptographic keys are stored in platform-specific secure directories:
+  - Windows: `%APPDATA%\sft\`
+  - Linux/macOS: `~/.config/sft/`
+- **Encryption**: All data is encrypted with XChaCha20-Poly1305 using libsodium
+
+## Platform Considerations
+- **Windows**: Requires administrator permission for firewall exception on first launch
+- **Windows**: Network interface selection required for peer discovery (limitation of Windows networking APIs)
+- **Linux/macOS**: No special privileges required
+
+## Build System
+- **Profiling Builds**: Use `-release-profiling` presets for performance analysis with debug symbols
+- **IDE Support**: Automatic `compile_commands.json` symlinking for clangd/LSP support
+- **Static Linking**: Release builds are statically linked for portability
 
 # Example
 
