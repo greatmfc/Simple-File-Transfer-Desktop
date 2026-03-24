@@ -75,7 +75,7 @@ ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 
 	iRet = gethostname(host_name_str, _SC_HOST_NAME_MAX);
 	if (iRet == -1) {
-		return unexpected(GetLastError());
+		return tl::unexpected(GetLastError());
 	}
 	auto str =
 		sh.form_discover_header(host_name_str, htons(local_host.get_port()));
@@ -98,7 +98,7 @@ ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 		if (iRet == -1) {
 			if (errno != WSAEWOULDBLOCK) {
 				local_host.set_blocking();
-				return unexpected(GetLastError());
+				return tl::unexpected(GetLastError());
 			}
 			cout << ".";
 			cout.flush();
@@ -164,7 +164,7 @@ Result<sockaddr_in> connect_to_peer(vector<sft_respond_struct>& all_hosts) {
 		}
 		else {
 			cout << "Invalid choice! Please retry." << endl;
-			return unexpected("Invalid choice");
+			return tl::unexpected("Invalid choice");
 		}
 	}
 
@@ -265,7 +265,7 @@ Accept:
 	listener.set_blocking();
 	SetLastError(WAIT_TIMEOUT);
 bad:
-	return unexpected(GetLastError());
+	return tl::unexpected(GetLastError());
 }
 
 bool send_file(sft_client&                                    target,
@@ -413,14 +413,14 @@ bool send_file(sft_client&                                    target,
 // It is caller's responsibility to initialize target.
 void receive_file(sft_server& target) {
 	vector<Byte>              buffer(CHUNKSZ);
-	//vector<Byte>              request(1024);
+	// vector<Byte>              request(1024);
 	SizeType                  sizeOfFile = 0, bytesReceived = 0, bytesLeft = 0;
 	RetType                   ret = -1;
 	ResType                   res = -1;
 	std::array<uint8_t, 1024> ack_buf{};
 	auto                      buf_size = generate_random_port(128, 1024);
 
-	//request.resize(8192);
+	// request.resize(8192);
 	progress_bar_with_speed(0, 0, true);
 	target.set_blocking();
 	auto sft_io_res = target.read(buffer);

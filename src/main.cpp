@@ -1,7 +1,6 @@
 #include "main.h"
-#include <sodium.h>
 #include <cstring>
-#include <print>
+#include <sodium.h>
 #ifdef _WIN32
 #include <WinSock2.h>
 #include <fileapi.h>
@@ -16,8 +15,8 @@ extern bool                     ConfigureFirewall();
 extern std::vector<NameIP>      GetIPv4BroadcastAddresses();
 extern std::vector<std::string> get_utf8_argv(int argc, char** argv);
 #else
-#include <termios.h>
 #include <csignal>
+#include <termios.h>
 #define WAIT_TIMEOUT ETIMEDOUT
 
 std::vector<std::string> get_utf8_argv(int argc, char** argv) {
@@ -45,7 +44,7 @@ struct sft_config {
 
 void print_help() {
 	// clang-format off
-    std::println(
+    fmt::println(
 		"Usage: simple-file-transfer [OPTION] [FILE](optional)...\n"
 		"Options: \n"
 		"  -h, --help                Print this message.\n"
@@ -240,7 +239,7 @@ int main(int argc, char* argv[]) {
 	locale::global(locale("en_US.UTF-8"));
 #endif
 	if (sodium_init() == -1) {
-		std::println(stderr, "Initialize sodium fail.");
+		fmt::println(stderr, "Initialize sodium fail.");
 		return 1;
 	}
 

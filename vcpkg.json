@@ -2,6 +2,7 @@
   "dependencies": [
     "libsodium",
     "bshoshany-thread-pool",
-    "tl-expected"
+    "tl-expected",
+    "fmt"
   ]
 }

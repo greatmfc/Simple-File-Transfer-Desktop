@@ -1,12 +1,11 @@
 #pragma once
 
-#include <algorithm>
-#include <string_view>
-#include <string>
-#include <format>
-#include <print>
-#include "io.hpp"
 #include "SecureSession.hpp"
+#include "io.hpp"
+#include <algorithm>
+#include <format>
+#include <string>
+#include <string_view>
 #ifdef __unix__
 #include <netinet/in.h>
 #else
@@ -205,7 +204,7 @@ class sft_base : public basic_io<true> {
 				_hosts_file.open(true);
 			}
 			_is_init = true;
-			std::println("The fingerprint of local public key is {}",
+			fmt::println("The fingerprint of local public key is {}",
 						 get_fingerprint(_pub.data(), _pub.size()));
 			return {};
 		}
@@ -384,7 +383,7 @@ class sft_client : public sft_base {
 			auto res = _session->step2_handle_response(
 				buf, [&](const std::string& fp) {
 					if (!(_known_hosts.contains(fp))) {
-						std::print("Can this key be trusted? {}\ty/N\n", fp);
+						fmt::print("Can this key be trusted? {}\ty/N\n", fp);
 						char choice = std::cin.get();
 						while (choice == '\n') {
 							choice = std::cin.get();
@@ -489,7 +488,7 @@ class sft_server : public sft_base {
 			auto res = _session->step2_handle_auth(
 				buf, [&](const std::string& fp) -> bool {
 					if (!(_known_hosts.contains(fp))) {
-						std::print("Can this key be trusted? {}\ty/N\n", fp);
+						fmt::print("Can this key be trusted? {}\ty/N\n", fp);
 						char choice = std::cin.get();
 						while (choice == '\n') {
 							choice = std::cin.get();

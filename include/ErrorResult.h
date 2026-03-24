@@ -1,11 +1,11 @@
 #ifndef ERRRES_H
 #define ERRRES_H
 
+#include <fmt/core.h>
 #include <string>
 #include <system_error>
-#include <filesystem>
-#include <print>
 #include <tl/expected.hpp>
+#include <format>
 using tl::expected;
 using tl::unexpected;
 
@@ -27,8 +27,8 @@ using ssize_t   = int64_t;
 #include <cerrno> // For errno
 #include <dirent.h>
 #include <sys/fcntl.h>
-#include <unistd.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #define INVALID_SOCKET       (-1)
 #define SOCKET_ERROR         (-1)
 #define INVALID_HANDLE_VALUE (-1)
@@ -54,8 +54,6 @@ concept buffer_type = requires(T a) {
 	requires std::is_same_v<typename T::value_type, char> ||
 				 std::is_same_v<typename T::value_type, unsigned char>;
 };
-
-namespace fs = std::filesystem;
 
 using std::string;
 using string_type = std::string;
@@ -84,14 +82,14 @@ inline std::string get_error_str(int errcode = GetLastError()) {
 
 inline void print_error(const std::string& msg, const std::error_code& errc) {
 #ifdef _WIN32
-	std::print(stderr, "{}: {}\n", msg, get_error_str(errc.value()));
+	fmt::print(stderr, "{}: {}\n", msg, get_error_str(errc.value()));
 #else
-	std::print(stderr, "{}: {}\n", msg, errc.message());
+	fmt::print(stderr, "{}: {}\n", msg, errc.message());
 #endif
 }
 
 inline void print_error(const std::string& msg, int errc = GetLastError()) {
-	std::print(stderr, "{}: {}\n", msg, get_error_str(errc));
+	fmt::print(stderr, "{}: {}\n", msg, get_error_str(errc));
 }
 
 // This overload presumes the given result is an error. It will lead to
@@ -102,7 +100,7 @@ inline void print_error(const std::string& msg, const ResType& res) {
 
 template <typename T>
 inline void print_error(const std::string& msg, const Result<T>& res) {
-	std::print(stderr, "{}: {}\n", msg, res.error());
+	fmt::print(stderr, "{}: {}\n", msg, res.error());
 }
 } // namespace kotcpp
 #endif
