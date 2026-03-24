@@ -26,7 +26,7 @@ An interactive console application that supports both receiving and sending spec
 - **[vcpkg](https://github.com/microsoft/vcpkg)**: Package manager for dependencies
 - **libsodium**: Encryption library (automatically installed via vcpkg)
 - **CMake 3.25+**: Build system generator
-- **C++23 Compatible Compiler**: GCC 14+, Clang 18+, MSVC 2022 17.0+
+- **C++20 Compatible Compiler**: GCC 13+, Clang 17+, MSVC 2022 17.0+
 
 ## Quick Start
 
@@ -78,7 +78,7 @@ cmake --build . --config Release -j
 - Presets available: `x64-release`, `x64-debug`, `x64-release-profiling`, `x64-clang-release`, `x86-release`
 
 ### Linux
-- **GCC 14+** or **Clang 18+** recommended
+- **GCC 13+** or **Clang 17+** recommended
 - Install system dependencies: `sudo apt-get install build-essential cmake`
 - No special privileges required
 - Presets available: `linux-release`, `linux-debug`, `linux-release-profiling`, `linux-clang-release`
