@@ -1,15 +1,27 @@
 #include <cstring>
 #include <vector>
 #include <chrono>
-#include <thread>
 #include <array>
-#include <random>
 #include <string>
 #include <sys/types.h>
 #include <future>
+#include <BS_thread_pool.hpp>
 #include "main.h"
-#include "asymCrypt.hpp"
-#ifdef __unix__
+#include "sftclass.hpp"
+#ifdef _WIN32
+#include <WinSock2.h>
+#include <WS2tcpip.h>
+#include <corecrt_io.h>
+#ifdef min
+#undef min
+#endif
+#define _SC_HOST_NAME_MAX 180
+#undef errno
+#define errno GetLastError()
+#pragma comment(lib, "mswsock.lib")
+extern std::wstring convert_string_to_wstring(const char* str);
+extern std::string  convert_wstring_to_string(const wchar_t* wstr);
+#else
 #include <cassert>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -19,34 +31,21 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstdio>
-#define WSAEWOULDBLOCK                  EAGAIN
 #define WAIT_TIMEOUT                    ETIMEDOUT
 #define SetLastError(n)                 errno = n
 #define GetLastError()                  errno
 #define convert_string_to_wstring(str)  str
 #define convert_wstring_to_string(wstr) wstr
-#define min(a, b)                       (((a) < (b)) ? (a) : (b))
-#define max(a, b)                       (((a) > (b)) ? (a) : (b))
 using optval_t = int;
-#else
-#include <WinSock2.h>
-#include <WS2tcpip.h>
-#include <corecrt_io.h>
-#define _SC_HOST_NAME_MAX 180
-#undef errno
-#define errno GetLastError()
-#pragma comment(lib, "mswsock.lib")
-extern std::wstring convert_string_to_wstring(const char* str);
-extern std::string  convert_wstring_to_string(const wchar_t* wstr);
 #endif
 
 using namespace std;
-using namespace mfcslib;
+using namespace kotcpp;
 
-static sft_header sh;
-bool              enable_encryption = true;
-constexpr auto    additional_length = AsymCrypt_TAG_SIZE + AsymCrypt_NONCE_SIZE;
-constexpr size_t  chunkBufSize      = (CHUNK_SIZE / 2) + additional_length;
+static sft_header      sh;
+static BS::thread_pool pool;
+constexpr SizeType     CHUNKSZ = 4'194'304;
+// constexpr SizeType     CHUNKSZ = 1'048'576;
 #ifdef DEBUG
 string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
 					 "built in: {1} {2}. Developed by greatmfc. DEBUG\033[0m",
@@ -57,102 +56,11 @@ string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
 					 VERSION, __DATE__, __TIME__);
 #endif // DEBUG
 
-uint16_t generate_random_port() {
-	std::random_device                      r;
-	std::default_random_engine              e1(r());
-	std::uniform_int_distribution<uint16_t> uniform_dist(9000, 65535);
-	return uniform_dist(e1);
-}
-
-// Initialize given socket_type with broadcast option,
-// returns 0 on success, -1 if fail.
-int create_udp_socket(socket_type& local_udp_host, const char* buf) {
-	int      iRet     = -1;
-	optval_t opt      = 1;
-	local_udp_host.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (local_udp_host.fd == -1) {
-		perror("socket error");
-		return -1;
-	}
-
-	memset(&local_udp_host.addr, 0, sizeof(local_udp_host.addr));
-	local_udp_host.addr.sin_family = AF_INET;
-	local_udp_host.addr.sin_port   = htons(SERVER_PORT);
-#ifdef _WIN32
-	inet_pton(AF_INET, buf, &local_udp_host.addr.sin_addr);
-#else
-	local_udp_host.addr.sin_addr.s_addr = INADDR_ANY;
-#endif
-	iRet = setsockopt(local_udp_host.fd, SOL_SOCKET, SO_BROADCAST,
-#ifdef __unix__
-					  (const void*)
-#endif // __unix__
-					  &opt,
-					  sizeof(opt));
-	if (-1 == iRet) {
-		perror("set sock option error");
-		goto bad;
-	}
-
-	iRet =
-		::bind(local_udp_host.fd, (const struct sockaddr*)&local_udp_host.addr,
-			   sizeof(struct sockaddr));
-	if (-1 == iRet) {
-		perror("bind error");
-		goto bad;
-	}
-	return 0;
-
-bad:
-	sockclose(local_udp_host.fd);
-	local_udp_host.fd = -1;
-	return -1;
-}
-
-// Initialize the given socket_type, returns 0 on success, -1 if fails.
-int create_tcp_socket(socket_type& local_tcp_host,
-					  bool         use_random_tcp_port = false) {
-	int         tcp_fd = -1;
-	char        flag   = 1;
-	int         ret    = 0;
-	sockaddr_in ip_port{};
-
-	memset(&ip_port, 0, sizeof(sockaddr_in));
-	tcp_fd                  = socket(PF_INET, SOCK_STREAM, IPPROTO_IP);
-	ip_port.sin_family      = AF_INET;
-	ip_port.sin_addr.s_addr = htonl(INADDR_ANY);
-	ip_port.sin_port =
-		htons(use_random_tcp_port ? generate_random_port() : 9007);
-
-	if (tcp_fd < 0) {
-		perror("cannot create tcp socket");
-		return -1;
-	}
-	setsockopt(tcp_fd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-	ret = ::bind(tcp_fd, (sockaddr*)&ip_port, sizeof(sockaddr_in));
-	if (ret < 0) {
-		perror("cannot bind");
-		goto bad;
-	}
-	ret = listen(tcp_fd, 5);
-	if (ret < 0) {
-		perror("cannot listen on tcp socket");
-		goto bad;
-	}
-	local_tcp_host.fd   = tcp_fd;
-	local_tcp_host.addr = ip_port;
-	return 0;
-
-bad:
-	sockclose(tcp_fd);
-	return -1;
-}
-
 // Search for sft peers in local network,
 // return the number of responding host on success, -1 if fails.
-ResType search_for_sft_peers(const socket_type& local_host, int retry,
+ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 							 vector<sft_respond_struct>& all_hosts) {
-	ResType     iRet = -1;
+	RetType     iRet = -1;
 	socklen_t   len  = sizeof(sockaddr_in);
 	char        host_name_str[_SC_HOST_NAME_MAX];
 	char        recv_buf[64];
@@ -161,57 +69,43 @@ ResType search_for_sft_peers(const socket_type& local_host, int retry,
 	sockaddr_in respond_addr;
 
 	target_udp_addr.sin_family      = AF_INET;
-	target_udp_addr.sin_port        = htons(SERVER_PORT);
+	target_udp_addr.sin_port        = htons(UDP_PORT);
 	target_udp_addr.sin_addr.s_addr = INADDR_BROADCAST;
 	memset(target_udp_addr.sin_zero, 0, 8);
 
 	iRet = gethostname(host_name_str, _SC_HOST_NAME_MAX);
 	if (iRet == -1) {
-		perror("Fail to get host name");
-		return -1;
+		return unexpected(GetLastError());
 	}
-	auto str = sh.form_discover_header(host_name_str, local_host.addr.sin_port);
-	iRet     = sendto(local_host.fd, str.c_str(), str.size(), 0,
-					  (const struct sockaddr*)&target_udp_addr,
-					  sizeof(struct sockaddr));
-	if (-1 == iRet) {
-		perror("udp broadcast error");
-		return -1;
+	auto str =
+		sh.form_discover_header(host_name_str, htons(local_host.get_port()));
+	// local_host.sendto(target_udp_addr, str);
+	auto ret = local_host.send_broadcast_message(UDP_PORT, str);
+	if (!ret) {
+		return ret;
 	}
+	local_host.set_nonblocking();
 
-#ifdef __unix__
-	int old_option = fcntl(local_host.fd, F_GETFL);
-	fcntl(local_host.fd, F_SETFL, old_option | O_NONBLOCK);
-#else
-	u_long op = 1;
-	ioctlsocket(local_host.fd, FIONBIO, &op);
-#endif
-	recvfrom(local_host.fd, recv_buf, sizeof(recv_buf), 0,
+	recvfrom(local_host.get_fd(), recv_buf, sizeof(recv_buf), 0,
 			 (struct sockaddr*)&respond_addr, &len);
 	memset(recv_buf, 0, sizeof(recv_buf));
 
 	cout << "Searching for local sft hosts.";
 	cout.flush();
 	while (retry--) {
-		iRet = recvfrom(local_host.fd, recv_buf, sizeof(recv_buf) - 1, 0,
+		iRet = recvfrom(local_host.get_fd(), recv_buf, sizeof(recv_buf) - 1, 0,
 						(struct sockaddr*)&respond_addr, &len);
 		if (iRet == -1) {
 			if (errno != WSAEWOULDBLOCK) {
-				perror("recv failed");
-#ifdef __unix__
-				fcntl(local_host.fd, F_SETFL, old_option);
-#else
-				op = 0;
-				ioctlsocket(local_host.fd, FIONBIO, &op);
-#endif
-				return -1;
+				local_host.set_blocking();
+				return unexpected(GetLastError());
 			}
 			cout << ".";
 			cout.flush();
 			std::this_thread::sleep_for(1s);
 			continue;
 		}
-		auto      res      = mfcslib::str_split(recv_buf, "/");
+		auto      res      = str_split(recv_buf, "/");
 		in_port_t port_num = 0;
 		from_chars(res[SFT_RES_PORT].data(),
 				   res[SFT_RES_PORT].data() + res[SFT_RES_PORT].size(),
@@ -220,16 +114,11 @@ ResType search_for_sft_peers(const socket_type& local_host, int retry,
 							   port_num);
 	}
 	cout << "\n";
-#ifdef __unix__
-	fcntl(local_host.fd, F_SETFL, old_option);
-#else
-	op = 0;
-	ioctlsocket(local_host.fd, FIONBIO, &op);
-#endif
+	local_host.set_blocking();
 	return all_hosts.size();
 }
 
-int choose_working_mode(int specified_mode) {
+int choose_working_mode(int specified_mode, bool use_random_port) {
 	int choice = 0;
 
 	// cout << "\033c";
@@ -239,14 +128,10 @@ int choose_working_mode(int specified_mode) {
 	}
 	cout << "\nChoose a mode for program to work:\n"
 			"0. Receive.\t"
-#ifdef _WIN32
 			"1. Transfer files.\t"
-			"2. Transfer folders.\t"
-#else
-			"1. Transfer files or folders\t"
-#endif
-		 << (enable_encryption ? "3. Disable safe transmission.\t"
-							   : "3. Enable safe transmission.\t")
+			"2. Transfer folders.\t";
+	cout << (use_random_port ? "3. Disable random receive port.\t"
+							 : "3. Enable random receive port.\t")
 		 << endl;
 	cout << "Enter your choice: ";
 	cin >> choice;
@@ -255,11 +140,9 @@ int choose_working_mode(int specified_mode) {
 
 // Connect to target sft peer.
 // Returns 0 on success, -1 if fails.
-int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
+Result<sockaddr_in> connect_to_peer(vector<sft_respond_struct>& all_hosts) {
 	unsigned                     count        = 1;
-	sockaddr_in*                 respond_addr = nullptr;
-	int                          tcp_fd       = -1;
-	int                          ret          = -1;
+	sockaddr_in                  respond_addr = {};
 	array<char, INET_ADDRSTRLEN> ipaddr;
 
 	cout << "All active sft hosts:\n";
@@ -281,54 +164,40 @@ int connect_to_peer(vector<sft_respond_struct>& all_hosts, socket_type& tcp) {
 		}
 		else {
 			cout << "Invalid choice! Please retry." << endl;
-			return -1;
+			return unexpected("Invalid choice");
 		}
 	}
 
-	respond_addr = &all_hosts[count].peer_addr;
-	tcp_fd       = socket(AF_INET, SOCK_STREAM, 0);
-	if (-1 == tcp_fd) {
-		perror("cannot create socket");
-		return -1;
-	}
-	respond_addr->sin_port = all_hosts[count].peer_port;
-	ret =
-		connect(tcp_fd, (const sockaddr*)respond_addr, sizeof(struct sockaddr));
-	if (-1 == ret) {
-		perror("connect error");
-#ifdef _WIN32
-		_close(tcp_fd);
-#else
-		close(tcp_fd);
-#endif
-		return -1;
-	}
-	cout << "Connect success! ";
-	tcp.fd   = tcp_fd;
-	tcp.addr = *respond_addr;
-	return 0;
+	memset(&respond_addr, 0, sizeof(respond_addr));
+	respond_addr          = all_hosts[count].peer_addr;
+	respond_addr.sin_port = all_hosts[count].peer_port;
+	return respond_addr;
 }
 
-expected<mfcslib::tcp_socket, int>
-wait_for_peers_to_connect(const socket_type& local_udp_host,
-						  const socket_type& local_tcp_host, int retry) {
+ResType wait_for_peers_to_connect(const udp_socket& local_udp_host,
+								  sft_server& receiver, int retry,
+								  bool use_random_port) {
 	array<char, 128>   recv_buf;
 	struct sockaddr_in responded_addr;
 	socklen_t          len = sizeof(responded_addr);
 	char               host[_SC_HOST_NAME_MAX + 1];
 	char               ip_str[INET_ADDRSTRLEN];
-	ResType            iRet = 0;
+	RetType            iRet = 0;
 	size_t             idx  = 0;
 	string             str, msg;
-	int                udpfd = local_udp_host.fd, tcpfd = local_tcp_host.fd;
-#ifdef _WIN32
-	u_long op = 1;
-#endif
+	tcp_socket         listener;
+
+	auto               res =
+		listener.listen(use_random_port ? generate_random_port() : TCP_PORT);
+	if (!res) {
+		return res;
+	}
+	SOCKET udpfd = local_udp_host.get_fd(), tcpfd = listener.get_fd();
 	fd_set rfds;
 
 	memset(&responded_addr, 0, sizeof(responded_addr));
 	cout << format("Listening on tcp port:{}. Waiting for clients...",
-				   ntohs(local_tcp_host.addr.sin_port))
+				   listener.get_port())
 		 << endl;
 
 	FD_ZERO(&rfds);
@@ -339,7 +208,7 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 	assert(iRet < 1024);
 #endif
 	[[unlikely]] if (iRet == SOCKET_ERROR) {
-		perror("select failed");
+		print_error("select failed");
 		goto bad;
 	}
 	[[unlikely]] if (FD_ISSET(tcpfd, &rfds)) { goto Accept; }
@@ -347,9 +216,13 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 	recv_buf.fill(0);
 	iRet = recvfrom(udpfd, recv_buf.data(), sizeof(recv_buf) - 1, 0,
 					(sockaddr*)&responded_addr, &len);
+	if (iRet == -1) {
+		print_error("recvfrom fail");
+		goto bad;
+	}
 	[[unlikely]] if (inet_ntop(AF_INET, &responded_addr.sin_addr, ip_str,
 							   INET_ADDRSTRLEN) == nullptr) {
-		perror("trans fail!\n");
+		print_error("trans fail!");
 		goto bad;
 	}
 #ifdef DEBUG
@@ -358,10 +231,10 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 #endif // DEBUG
 	iRet = gethostname(host, _SC_HOST_NAME_MAX);
 	[[unlikely]] if (iRet == -1) {
-		perror("gethostname fail");
+		print_error("gethostname fail");
 		goto bad;
 	}
-	str = sh.form_respond_header(host, local_tcp_host.addr.sin_port);
+	str = sh.form_respond_header(host, htons(listener.get_port()));
 	msg = recv_buf.data();
 	idx = msg.find_last_of('/') + 1;
 	responded_addr.sin_port =
@@ -369,227 +242,214 @@ wait_for_peers_to_connect(const socket_type& local_udp_host,
 	iRet = sendto(udpfd, str.c_str(), str.size(), 0,
 				  (const sockaddr*)&responded_addr, sizeof(sockaddr));
 	if (-1 == iRet) {
-		perror("send error");
+		print_error("send error");
 		goto bad;
 	}
 
 Accept:
-#ifdef _WIN32
-	ioctlsocket(local_tcp_host.fd, FIONBIO, &op);
-#else
-	fcntl(local_tcp_host.fd, F_SETFL,
-		  fcntl(local_tcp_host.fd, F_GETFL) | O_NONBLOCK);
-#endif
+	listener.set_nonblocking();
 	while (retry--) {
-		iRet = accept(tcpfd, (struct sockaddr*)&responded_addr, &len);
-		if (-1 == iRet) {
-			if (errno != WSAEWOULDBLOCK) {
-				perror("accept error");
+		auto ret = receiver.listen_and_accept(listener);
+		if (!ret) {
+			if (ret.error() != WSAEWOULDBLOCK) {
+				print_error("accept error", ret);
 				goto bad;
 			}
+			std::this_thread::sleep_for(1s);
+			continue;
 		}
-		else if (iRet > 0) {
-			cout << "TCP connection established! Receiving files..." << endl;
-			return mfcslib::tcp_socket(iRet, responded_addr);
-		}
-		std::this_thread::sleep_for(1s);
+		cout << "TCP connection established! Receiving files..." << endl;
+		return ret;
 	}
 	cerr << "Accept timeout, please try again." << endl;
-#ifdef _WIN32
-	op = 0;
-	ioctlsocket(local_tcp_host.fd, FIONBIO, &op);
-#else
-	fcntl(local_tcp_host.fd, F_SETFL,
-		  fcntl(local_tcp_host.fd, F_GETFL) & ~O_NONBLOCK);
-#endif
+	listener.set_blocking();
 	SetLastError(WAIT_TIMEOUT);
 bad:
-	return std::unexpected(GetLastError());
+	return unexpected(GetLastError());
 }
 
-bool send_file(tcp_socket& target, const vector<tuple<File, string>>& files) {
-	[[maybe_unused]] off_t off       = 0;
-	size_t                 have_send = 0;
-	char                   code      = -1;
-	size_t                 file_sz = 0, bytes_left = 0;
-	ResType                ret     = -1;
+bool send_file(sft_client&                                    target,
+			   const vector<tuple<unique_ptr<File>, string>>& files) {
+	[[maybe_unused]] off_t off     = 0;
+	SizeType               file_sz = 0, bytes_left = 0, have_send = 0, num = 0;
+	RetType                ret     = -1;
+	ResType                res     = -1;
 	string                 request = "sft1.1/FIL";
-	mfcslib::progress_bar_with_speed(0, 0, true);
+	std::array<uint8_t, 1024> ack_buf{};
+	progress_bar_with_speed(0, 0, true);
 
 	for (const auto& [fd, file_path] : files) {
-		if (!fd.is_open()) { // directory
+		if (fd == nullptr || !fd->is_open()) { // directory
 			request += format("/{}/0", file_path);
 		}
 		else { // regular file
-			request += format("/{}/{}", file_path, fd.size());
+			request += format("/{}/{}", file_path, fd->size());
 		}
 	}
-	request += "\r\n";
-	target.write(request);
-	code = target.read_byte();
-	if (code != '1') {
-		perror("Error while receiving code from peer in send_file");
+	target.set_blocking();
+	auto sft_io_res = target.write(request);
+	res             = sft_io_res.get();
+	if (!res) {
+		print_error("Fail to send request", res);
 		return false;
 	}
-	target.set_nonblocking();
+	sft_io_res = target.read(ack_buf);
+	if (!sft_io_res.get() || ack_buf[0] != '1') {
+		print_error("Error while receiving code from peer in send_file");
+		return false;
+	}
 	for (const auto& [file, file_path] : files) {
-		if (!file.is_open()) {
+		if (file == nullptr || !file->is_open()) {
 			continue;
 		}
 		std::cout << "Sending file: " << file_path << '\n';
-#ifdef __unix__
-		have_send = 0;
-		file_sz   = file.size();
-		off       = 0;
-		while (have_send < file_sz) {
-			ret = sendfile(target.get_fd(), file.get_fd(), &off, file_sz);
-			[[likely]] if (ret == -1) {
-				[[unlikely]] if (errno != EAGAIN) {
-					perror("Sendfile failed");
-					break;
-				}
-				continue;
-			}
-			have_send += ret;
-			mfcslib::progress_bar(have_send, file_sz);
-		}
-		cout << '\n';
-	}
-#else
-		file_sz    = file.size();
+		file_sz    = file->size();
 		bytes_left = file_sz;
 		have_send  = 0;
 
-		if (file_sz <= MAXARRSZ) {
-			auto buf = mfcslib::make_array<Byte>(file_sz);
-			ret      = file.read(buf);
-			if (ret == -1) {
-				perror("Fail to read file");
+		if (file_sz <= CHUNKSZ) {
+			auto buf = vector<Byte>(file_sz);
+			res      = file->read(buf);
+			if (!res) {
+				print_error(format("Fail to read file: {}", file_path), res);
 				return false;
 			}
+			sft_io_res = target.write(buf, have_send, bytes_left);
 			while (bytes_left > 0) {
-				ret = target.write(buf, have_send, bytes_left);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						break;
+				if (sft_io_res.is_yielded()) {
+					res = sft_io_res.get_yielded().value();
+				}
+				else if (sft_io_res.done()) {
+					res = sft_io_res.get();
+					[[unlikely]] if (!res) {
+						print_error(format("Fail to send file: {}", file_path),
+									res);
+						return false;
 					}
-					continue;
 				}
-				[[unlikely]] if (ret == 0 && bytes_left > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"completed."
-						 << endl;
-					break;
-				}
+				ret = res.value();
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar_with_speed(have_send, file_sz);
+				progress_bar_with_speed(have_send, file_sz);
+				sft_io_res.resume();
 			}
 		}
 		else {
-			int              bufferidx = 1;
-			auto             buffer1   = mfcslib::make_array<Byte>(bufSize);
-			auto             buffer2   = mfcslib::make_array<Byte>(bufSize);
-			future<ResType>  read_res;
-			size_t           num    = 0;
-			TypeArray<Byte>* buffer = &buffer1;
+			int  bufferidx = 1;
+			// auto            buffer1   = vector<Byte>(CHUNKSZ);
+			// auto            buffer2   = vector<Byte>(CHUNKSZ);
+			auto buffer1 = make_unique_for_overwrite<Byte[]>(CHUNKSZ);
+			auto buffer2 = make_unique_for_overwrite<Byte[]>(CHUNKSZ);
+			future<ResType> read_res;
+			Byte*           buffer = buffer1.get();
 
-			ret                     = file.read(buffer1);
-			if (ret == -1) {
-				perror("Fail to read file");
-				goto end;
+			res                    = file->read(buffer1.get(), CHUNKSZ);
+			if (!res) {
+				print_error(
+					format("Fail to read file: {}. Reason: ", file_path), res);
+				return false;
 			}
-			read_res = std::async(std::launch::async, &File::read_buf, &file,
-								  &buffer2);
-			num      = min(bufSize, bytes_left);
+			read_res   = pool.submit_task([ObjectPtr = file.get(), &buffer2] {
+                return ObjectPtr->read(buffer2.get(), CHUNKSZ);
+            });
+			num        = std::min(CHUNKSZ, bytes_left);
+			sft_io_res = target.write(buffer + have_send, num - have_send);
 			while (bytes_left > 0) {
-				ret = target.write(*buffer, have_send, num - have_send);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						cout << '\n';
+				if (sft_io_res.is_yielded()) {
+					res = sft_io_res.get_yielded().value();
+				}
+				else if (sft_io_res.done()) {
+					res = sft_io_res.get();
+					[[unlikely]] if (!res) {
+						print_error(format("Fail to send file: {}", file_path),
+									res);
 						break;
 					}
-					continue;
 				}
-				[[unlikely]] if (ret == 0 && bytes_left > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
+				ret = res.value();
 				have_send += ret;
 				bytes_left -= ret;
-				mfcslib::progress_bar_with_speed(file_sz - bytes_left, file_sz);
-				[[unlikely]] if (have_send == bufSize) {
+				progress_bar_with_speed(file_sz - bytes_left, file_sz);
+				[[unlikely]] if (have_send == CHUNKSZ) {
 					read_res.wait();
-					ret = read_res.get();
-					[[unlikely]] if (ret == -1) {
-						perror("Fail to read file");
-						cout << '\n';
-						break;
+					res = read_res.get();
+					[[unlikely]] if (!res) {
+						print_error(format("Fail to read file: {}", file_path),
+									res);
+						return false;
 					}
-					read_res  = std::async(std::launch::async, &File::read_buf,
-										   &file, buffer);
-					num       = min(bufSize, bytes_left);
+					read_res =
+						pool.submit_task([ObjectPtr = file.get(), buffer] {
+							return ObjectPtr->read(buffer, CHUNKSZ);
+						});
+					num       = std::min(CHUNKSZ, bytes_left);
 					have_send = 0;
-					buffer    = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+					buffer =
+						((++bufferidx) % 2) ? buffer1.get() : buffer2.get();
+					sft_io_res =
+						target.write(buffer + have_send, num - have_send);
+					continue;
 				}
+				sft_io_res.resume();
 			}
 		}
 		cout << '\n';
 	}
-end:
-#endif
-	target.set_blocking();
+
+	cout << "Waiting for client to complete.\n";
+	sft_io_res = target.read(ack_buf);
+	if (sft_io_res.get() && ack_buf[0] == '0') {
+		cout << "All files have been received by the other side.\n";
+	}
+	else {
+		cout << "Something unexpected happened. Please check the other "
+				"side "
+				"for file integrity.\n";
+	}
 	return true;
 }
 
 // No need to close file manually.
-void receive_file(tcp_socket& target) {
-	std::array<char, 1024> buffer{};
-	string                 request;
-	size_t                 sizeOfFile    = 0;
-	size_t                 bytesReceived = 0;
-	size_t                 bytesLeft     = 0;
-	ResType                ret           = -1;
+// It is caller's responsibility to initialize target.
+void receive_file(sft_server& target) {
+	vector<Byte>              buffer(CHUNKSZ);
+	//vector<Byte>              request(1024);
+	SizeType                  sizeOfFile = 0, bytesReceived = 0, bytesLeft = 0;
+	RetType                   ret = -1;
+	ResType                   res = -1;
+	std::array<uint8_t, 1024> ack_buf{};
+	auto                      buf_size = generate_random_port(128, 1024);
 
-	mfcslib::progress_bar_with_speed(0, 0, true);
-	// target.set_blocking();
-	target.set_nonblocking();
-	while (true) {
-		buffer.fill(0);
-		ret = target.read(buffer.data(), buffer.size());
-		if (ret == SOCKET_ERROR && errno != WSAEWOULDBLOCK) {
-			perror("Error while trying to receive from peer");
-			return;
-		}
-		else if (ret > 0) {
-			request += buffer.data();
-			if (buffer[ret - 2] == '\r' && buffer[ret - 1] == '\n') {
-				request.pop_back();
-				request.pop_back();
-				break;
-			}
-		}
-		else if (ret == 0) {
-			std::cerr << "Peer connection has been closed." << endl;
-			return;
-		}
+	//request.resize(8192);
+	progress_bar_with_speed(0, 0, true);
+	target.set_blocking();
+	auto sft_io_res = target.read(buffer);
+	while (!sft_io_res.done()) {
+		sft_io_res.resume();
 	}
-	auto res = str_split(request, "/");
-	target.write_byte('1');
+	res = sft_io_res.get();
+	if (!res) {
+		print_error("Fail to receive request", res);
+		return;
+	}
+	ret = res.value();
+	auto requests =
+		str_split(string_view((const char*)buffer.data(), ret), "/");
+	randombytes_buf(ack_buf.data(), buf_size);
+	ack_buf[0] = '1';
+	target.write(ack_buf.data(), buf_size);
+	// target.write_byte('1');
 #ifdef DEBUG
 	cout << "Receive request: " << request << endl;
 #endif
-	if (res.size() <= 2) {
+	if (requests.size() <= 2) {
 		cerr << "Receive unknown request.\n";
 	}
-	for (size_t i = SFT_FIL_NAME_START; i < res.size() - 1; i += 2) {
-		string file_name = "./" + string(res[i]);
-		from_chars(res[i + 1].data(), res[i + 1].data() + res[i + 1].size(),
-				   sizeOfFile);
+	// target.set_nonblocking();
+	for (size_t i = SFT_FIL_NAME_START; i < requests.size() - 1; i += 2) {
+		string file_name = "./" + string(requests[i]);
+		from_chars(requests[i + 1].data(),
+				   requests[i + 1].data() + requests[i + 1].size(), sizeOfFile);
 		bytesLeft     = sizeOfFile;
 		bytesReceived = 0;
 #ifdef __unix__
@@ -604,126 +464,135 @@ void receive_file(tcp_socket& target) {
 			fs::create_directories(file_name);
 			continue;
 		}
-#ifdef _WIN32
-		File file_output_stream(convert_string_to_wstring(file_name.data()));
-#else
 		File file_output_stream(file_name);
-#endif // _WIN32
 		cout << format("Receiving file: {}\tSize: {}", file_name, sizeOfFile)
 			 << endl;
-		if (!file_output_stream.open(true, File::iomode::WRONLY)) {
-			perror("Fail to create file");
-			while (bytesLeft > 0) {
-				ret = target.read(buffer.data(), min(bytesLeft, buffer.size()));
-				[[likely]] if (ret == SOCKET_ERROR) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Error while trying to receive from peer");
+		if (auto open_res = file_output_stream.open(true, File::iomode::WRONLY);
+			!open_res) {
+			print_error("Fail to create file", open_res);
+			sft_io_res = target.read(
+				buffer.data(), std::min(bytesLeft, (SizeType)buffer.size()));
+			while (true) {
+				if (sft_io_res.is_yielded()) {
+					res = sft_io_res.get_yielded().value();
+					bytesLeft -= *res;
+					sft_io_res.resume();
+				}
+				else if (sft_io_res.done()) {
+					res = sft_io_res.get();
+					[[unlikely]] if (!res) {
+						print_error("Error while trying to receive from peer",
+									res);
+						return;
+					}
+					bytesLeft -= *res;
+					if (bytesLeft == 0) {
 						break;
 					}
-					continue;
+					sft_io_res = target.read(
+						buffer.data(),
+						std::min(bytesLeft, (SizeType)buffer.size()));
 				}
-				if (ret == 0) {
-					cerr << "Target host is closed while receiving files.\n";
-					return;
-				}
-				bytesLeft -= ret;
 			}
 			continue;
 		}
 
-		if (sizeOfFile < MAXARRSZ) {
-			auto bufferForFile = mfcslib::make_array<Byte>(sizeOfFile);
+		if (sizeOfFile <= CHUNKSZ) {
+			auto bufferForFile = vector<Byte>(sizeOfFile);
+			sft_io_res = target.read(bufferForFile, bytesReceived, bytesLeft);
 			while (bytesLeft > 0) {
-				ret = target.read(bufferForFile, bytesReceived, bytesLeft);
-				[[likely]] if (ret == SOCKET_ERROR) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Error while trying to receive from peer");
-						break;
+				if (sft_io_res.is_yielded()) {
+					res = sft_io_res.get_yielded().value();
+				}
+				else if (sft_io_res.done()) {
+					res = sft_io_res.get();
+					[[unlikely]] if (!res) {
+						print_error("Error while trying to receive from peer",
+									res);
+						return;
 					}
-					continue;
 				}
-				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
+				ret = res.value();
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar_with_speed(bytesReceived, sizeOfFile);
-			}
-			if (bytesLeft > 0) {
-				break;
+				progress_bar_with_speed(bytesReceived, sizeOfFile);
+				sft_io_res.resume();
 			}
 			if (file_output_stream.write(bufferForFile) == -1) {
-				perror("Error while trying to write to local");
+				print_error("Error while trying to write to local");
 				cout << '\n';
 			}
 		}
 		else {
-			auto             buffer1     = mfcslib::make_array<Byte>(bufSize);
-			auto             buffer2     = mfcslib::make_array<Byte>(bufSize);
-			size_t           bytesRemain = sizeOfFile;
-			auto             num         = bufSize;
-			int              bufferidx   = 1;
-			TypeArray<Byte>* buffer      = &buffer1;
-			future<ResType>  write_res;
+			auto     buffer1     = make_unique_for_overwrite<Byte[]>(CHUNKSZ);
+			auto     buffer2     = make_unique_for_overwrite<Byte[]>(CHUNKSZ);
+			SizeType bytesRemain = sizeOfFile;
+			auto     num         = CHUNKSZ;
+			int      bufferidx   = 1;
+			Byte*    buffer      = buffer1.get();
+			future<ResType> write_res;
 
+			sft_io_res =
+				target.read(buffer + bytesReceived, num - bytesReceived);
 			while (bytesLeft > 0) {
-				ret = target.read(*buffer, bytesReceived, num - bytesReceived);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						break;
+				if (sft_io_res.is_yielded()) {
+					res = sft_io_res.get_yielded().value();
+				}
+				else if (sft_io_res.done()) {
+					res = sft_io_res.get();
+					[[unlikely]] if (!res) {
+						print_error("Error while trying to receive from peer",
+									res);
+						return;
 					}
-					continue;
 				}
-				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
+				ret = res.value();
 				bytesReceived += ret;
 				bytesLeft -= ret;
-				mfcslib::progress_bar_with_speed(sizeOfFile - bytesLeft,
-												 sizeOfFile);
-				[[unlikely]] if (bytesReceived == bufSize) {
+				progress_bar_with_speed(sizeOfFile - bytesLeft, sizeOfFile);
+				[[unlikely]] if (bytesReceived == CHUNKSZ) {
 					[[likely]] if (bufferidx != 1) {
 						write_res.wait();
-						ret = write_res.get();
-						[[unlikely]] if (ret == -1) {
-							perror("Fail to write file");
+						res = write_res.get();
+						[[unlikely]] if (!res) {
+							print_error("Error while trying to write to local",
+										res);
 							break;
 						}
 					}
-					write_res = std::async(std::launch::async, &File::write_buf,
-										   &file_output_stream, buffer);
-					num       = min(bufSize, bytesLeft);
+					write_res = pool.submit_task(
+						[ObjectPtr = &file_output_stream, buffer] {
+							return ObjectPtr->write(buffer, CHUNKSZ);
+						});
+					num           = std::min(CHUNKSZ, bytesLeft);
 					bytesRemain   = bytesLeft;
 					bytesReceived = 0;
-					buffer        = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
+					buffer =
+						((++bufferidx) % 2) ? buffer1.get() : buffer2.get();
+					sft_io_res = target.read(buffer + bytesReceived,
+											 num - bytesReceived);
+					continue;
 				}
-			}
-			if (bytesLeft > 0) {
-				break;
+				sft_io_res.resume();
 			}
 			write_res.wait();
-			file_output_stream.write(*buffer, 0, bytesRemain);
+			file_output_stream.write(buffer, bytesRemain);
 		}
 		cout << '\n';
 	}
-	target.set_blocking();
+
+	buf_size = generate_random_port(128, 1024);
+	randombytes_buf(ack_buf.data(), buf_size);
+	ack_buf[0] = '0';
+	target.write(ack_buf.data(), buf_size);
 }
 
 // Connect to peer manually.
 // Returns 0 on success, -1 if fails.
-int manual_connect_to_peer(socket_type& tcp) {
+Result<sockaddr_in> manual_connect_to_peer() {
 	string      ip;
 	uint16_t    port = 0;
 	sockaddr_in respond_addr{};
-	int         tcp_fd = -1;
-	int         ret    = -1;
 
 	while (true) {
 		cout << "Please input target ip: ";
@@ -742,26 +611,7 @@ int manual_connect_to_peer(socket_type& tcp) {
 			break;
 		}
 	}
-
-	tcp_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (-1 == tcp_fd) {
-		perror("cannot create socket");
-		return -1;
-	}
-	ret = connect(tcp_fd, reinterpret_cast<const sockaddr*>(&respond_addr),
-				  sizeof(struct sockaddr));
-	if (-1 == ret) {
-		perror("connect error");
-		cout << "Press any key to retry.";
-		cin.ignore();
-		cin.get();
-		sockclose(tcp_fd);
-		return -1;
-	}
-	cout << "Connect success!" << endl;
-	tcp.fd   = tcp_fd;
-	tcp.addr = respond_addr;
-	return 0;
+	return respond_addr;
 }
 
 // TODO
@@ -771,26 +621,19 @@ int configure_options() {
 	return 0;
 }
 
-vector<tuple<File, string>>
+vector<tuple<unique_ptr<File>, string>>
 get_filefd_list(const vector<string_type>& path_list) {
-	vector<tuple<File, string>> result;
+	vector<tuple<unique_ptr<File>, string>> result;
 	for (const auto& path : path_list) {
 		if (fs::is_directory(path)) {
-#ifdef _WIN32
-			string folderName = convert_wstring_to_string(
-				path.substr(path.find_last_of('\\') + 1).c_str());
-#else
-			string folderName = path;
-			auto   idx        = path.find_last_of('/');
-			if (idx != string::npos) {
-				folderName = path.substr(idx + 1).c_str();
-			}
-#endif // _WIN32
-			result.emplace_back(File(), folderName + '\\');
+			// Get folder name using std::filesystem
+			string folderName = fs::path(path).filename().string();
+
+			result.emplace_back(nullptr, folderName + '\\');
 			for (const auto& entry : fs::recursive_directory_iterator(path)) {
 				if (entry.is_regular_file()) {
-					File f(entry.path().c_str());
-					if (f.open_read_only()) {
+					auto f = make_unique<File>(entry.path());
+					if (auto open_res = f->open_read_only(); open_res) {
 						std::string relative =
 							fs::relative(entry.path(), path).string();
 #ifdef __unix__
@@ -800,13 +643,13 @@ get_filefd_list(const vector<string_type>& path_list) {
 							}
 						}
 #endif // __unix__
-						result.emplace_back(move(f),
-											folderName + '\\' + relative);
+						result.emplace_back(std::move(f),
+											(folderName + '\\') += relative);
 					}
 					else {
-						perror(format("Cannot open file: {}. Reason",
-									  entry.path().string())
-								   .c_str());
+						print_error(format("Cannot open file: {}",
+										   entry.path().string()),
+									open_res);
 						continue;
 					}
 				}
@@ -820,462 +663,33 @@ get_filefd_list(const vector<string_type>& path_list) {
 						}
 					}
 #endif // __unix__
-					result.emplace_back(File(),
-										folderName + '\\' + relative + '\\');
+					result.emplace_back(nullptr,
+										folderName + '\\' += relative += '\\');
 				}
 				else {
 					cerr << format(
 						"The target file: {} is neither regular file "
 						"nor a directory. Ignored.\n",
-#ifdef _WIN32
-						convert_wstring_to_string(path.c_str())
-#else
-						path
-#endif // _WIN32
-					);
+						path);
 				}
 			}
 		}
 		else if (fs::is_regular_file(path)) {
-			File f(path);
-			if (f.open_read_only()) {
-#ifdef _WIN32
-				string fileName = convert_wstring_to_string(
-					path.substr(path.find_last_of('\\') + 1).c_str());
-#else
-				string fileName = path;
-				auto   idx      = path.find_last_of('/');
-				if (idx != string::npos) {
-					fileName = path.substr(idx + 1).c_str();
-				}
-#endif // _WIN32
-				result.emplace_back(move(f), fileName);
+			auto f = make_unique<File>(path);
+			if (f->open_read_only()) {
+				// Get file name using std::filesystem
+				string fileName = fs::path(path).filename().string();
+				result.emplace_back(std::move(f), fileName);
 			}
 			else {
-				perror(format("Cannot open file: {}. Reason", f.filename())
-						   .c_str());
+				print_error(format("Cannot open file: {}", f->filename()));
 			}
 		}
 		else {
 			cerr << format("The target file: {} is neither a regular file "
 						   "nor a directory. Ignored.\n",
-#ifdef _WIN32
-						   convert_wstring_to_string(path.c_str())
-#else
-						   path
-#endif // _WIN32
-			);
+						   path);
 		}
 	}
 	return result;
-}
-
-ssize_t read_and_encrypt(const File& file, AsymCrypt& aes, vector<Byte>* buf) {
-	auto read_buf = mfcslib::make_array<Byte>(chunkBufSize - additional_length);
-	auto ret      = file.read(read_buf);
-	if (ret == -1) {
-		perror("Fail to read file");
-		return ret;
-	}
-	try {
-		auto res = aes.encrypt(read_buf.data(), ret);
-		*buf     = std::move(res);
-		return 0;
-	} catch (const std::exception& e) {
-		cerr << "Cannot encrypt data from: " << file.filename()
-			 << ". Reason: " << e.what() << "\n";
-	}
-	return -1;
-}
-
-// Note that requests are also encrypted.
-bool send_file_s(tcp_socket& target, const vector<tuple<File, string>>& files) {
-	[[maybe_unused]] off_t off       = 0;
-	size_t                 have_send = 0;
-	char                   code      = -1;
-	size_t                 file_sz = 0, bytes_left = 0, total_bytes_to_send = 0;
-	ResType                ret = -1;
-	AsymCrypt              aes;
-	string                 request = "sft1.1/FIL";
-	std::array<char, 13 + AsymCrypt_KEY_SIZE> handshake_request{};
-	memcpy(handshake_request.data(), "sft1.2/PUB/", 11);
-	memcpy(handshake_request.data() + 11, aes.m_pub_key.data(),
-		   aes.m_pub_key.size());
-	*(handshake_request.rbegin())     = '\n';
-	*(handshake_request.rbegin() + 1) = '\r';
-	mfcslib::progress_bar_with_speed(0, 0, true);
-
-	std::println("\nThe hexadecimal format of local public key is:{}",
-				 aes.get_hex_pub_key());
-	target.write(handshake_request);
-	vector<char> received_pubkey(handshake_request.size() + 1);
-	ret = target.read(received_pubkey);
-	if (ret <= 0) {
-		std::println(stderr, "Cannot receive public key");
-		return -1;
-	}
-	memcpy(aes.m_other_pub_key.data(), received_pubkey.data() + 11,
-		   AsymCrypt_KEY_SIZE);
-	std::println("The hexadecimal format of other public key is:{}",
-				 bin_to_hex_string(aes.m_other_pub_key.data(),
-								   aes.m_other_pub_key.size()));
-	std::println("Consider abort the operation if local public key is not "
-				 "matched to other host's other public key.");
-
-	for (const auto& [fd, file_path] : files) {
-		if (!fd.is_open()) { // directory
-			request += format("/{}/0", file_path);
-		}
-		else { // regular file
-			request += format("/{}/{}", file_path, fd.size());
-		}
-	}
-	auto encrypted_request = aes.encrypt(request.data(), request.size());
-	// target.write((const char*)aes.salt_value.data(), SALT_SIZE);
-	target.write(encrypted_request);
-	target.write(string_view("\r\n"));
-	code = target.read_byte();
-	if (code != '1') {
-		perror("Error while receiving code from peer in send_file");
-		return false;
-	}
-	target.set_nonblocking();
-	for (const auto& [file, file_path] : files) {
-		if (!file.is_open()) {
-			continue;
-		}
-		std::cout << "Sending file: " << file_path << '\n';
-
-		file_sz = file.size();
-		total_bytes_to_send =
-			file_sz +
-			ceil(double(file_sz) / (chunkBufSize - additional_length)) *
-				additional_length;
-		bytes_left = total_bytes_to_send;
-		have_send  = 0;
-
-		if (file_sz <= CHUNK_SIZE) {
-			auto read_buf = mfcslib::make_array<Byte>(file_sz);
-			ret           = file.read(read_buf);
-			if (ret == -1) {
-				perror("Fail to read file");
-				return false;
-			}
-			vector<char> buf;
-			try {
-				buf = aes.encrypt(read_buf.data(), read_buf.size());
-			} catch (const std::exception& e) {
-				cerr << "Cannot encrypt data from: " << file.filename()
-					 << ". Reason: " << e.what() << "\n";
-				break;
-			}
-			while (bytes_left > 0) {
-				ret = target.write(buf.data() + have_send, bytes_left);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						break;
-					}
-					continue;
-				}
-				[[unlikely]] if (ret == 0 && bytes_left > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
-				have_send += ret;
-				bytes_left -= ret;
-				mfcslib::progress_bar_with_speed(have_send,
-												 total_bytes_to_send);
-			}
-		}
-		else {
-			int             bufferidx = 1;
-			vector<Byte>    buffer1;
-			vector<Byte>    buffer2;
-			future<ssize_t> read_res;
-			size_t          num    = 0;
-			vector<Byte>*   buffer = &buffer1;
-
-			ret                    = read_and_encrypt(file, aes, buffer);
-			if (ret == -1) {
-				perror("Fail to read file");
-				goto end;
-			}
-			read_res = std::async(std::launch::async, read_and_encrypt,
-								  std::ref(file), std::ref(aes), &buffer2);
-			num      = min(chunkBufSize, bytes_left);
-			while (bytes_left > 0) {
-				ret = target.write(buffer->data() + have_send, num - have_send);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						cout << '\n';
-						break;
-					}
-					continue;
-				}
-				[[unlikely]] if (ret == 0 && bytes_left > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
-				have_send += ret;
-				bytes_left -= ret;
-				mfcslib::progress_bar_with_speed(
-					total_bytes_to_send - bytes_left, total_bytes_to_send);
-				[[unlikely]] if (have_send == chunkBufSize) {
-					read_res.wait();
-					ret = read_res.get();
-					[[unlikely]] if (ret == -1) {
-						perror("Fail to read file");
-						cout << '\n';
-						break;
-					}
-					num = bytes_left;
-					if (bytes_left > chunkBufSize) {
-						read_res =
-							std::async(std::launch::async, read_and_encrypt,
-									   std::ref(file), std::ref(aes), buffer);
-						num = chunkBufSize;
-					}
-					have_send = 0;
-					buffer    = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
-				}
-			}
-		}
-		cout << '\n';
-	}
-end:
-	target.set_blocking();
-	return true;
-}
-
-ssize_t decrypt_and_write(File& file, AsymCrypt& aes,
-						  const TypeArray<Byte>* buf) {
-	try {
-		auto res = aes.decrypt(buf->data(), buf->size());
-		return file.write(res);
-	} catch (const std::exception& e) {
-		cerr << "Cannot encrypt data from: " << file.filename()
-			 << ". Reason: " << e.what() << "\n";
-	}
-	return -1;
-}
-
-void receive_file_s(tcp_socket& target) {
-	std::array<char, 1024> buffer{};
-	vector<char>           request, encrypted_request;
-	size_t                 sizeOfFile    = 0;
-	size_t                 bytesReceived = 0;
-	size_t                 bytesLeft = 0, total_bytes_to_receive = 0;
-	ResType                ret = -1;
-	AsymCrypt              aes;
-
-// target.set_blocking();
-receive:
-	while (true) {
-		buffer.fill(0);
-		ret = target.read(buffer);
-		if (ret == SOCKET_ERROR && errno != WSAEWOULDBLOCK) {
-			perror("Error while trying to receive from peer");
-			return;
-		}
-		else if (ret > 0) {
-			encrypted_request.insert(encrypted_request.end(), buffer.begin(),
-									 buffer.begin() + ret);
-			if (buffer[ret - 2] == '\r' && buffer[ret - 1] == '\n') {
-				encrypted_request.pop_back();
-				encrypted_request.pop_back();
-				break;
-			}
-		}
-		else if (ret == 0) {
-			std::cerr << "Peer connection has been closed." << endl;
-			return;
-		}
-	}
-	// If the other side is safe transmission
-	if (encrypted_request[7] == 'P' && encrypted_request[8] == 'U' &&
-		encrypted_request[9] == 'B') {
-		std::println("The hexadecimal format of local public key is:{}",
-					 aes.get_hex_pub_key());
-		memcpy(aes.m_other_pub_key.data(), encrypted_request.data() + 11,
-			   AsymCrypt_KEY_SIZE);
-		std::array<char, 13 + AsymCrypt_KEY_SIZE> handshake_request{};
-		memcpy(handshake_request.data(), "sft1.2/PUB/", 11);
-		memcpy(handshake_request.data() + 11, aes.m_pub_key.data(),
-			   aes.m_pub_key.size());
-		*(handshake_request.rbegin())     = '\n';
-		*(handshake_request.rbegin() + 1) = '\r';
-
-		std::println("The hexadecimal format of other public key is:{}",
-					 bin_to_hex_string(aes.m_other_pub_key.data(),
-									   aes.m_other_pub_key.size()));
-		target.write(handshake_request);
-		encrypted_request.clear();
-		std::println("Consider abort the operation if local public key is not "
-					 "matched to other host's other public key.");
-		goto receive;
-	}
-
-	try {
-		request =
-			aes.decrypt(encrypted_request.data(), encrypted_request.size());
-	} catch (const std::exception& e) {
-		cerr << "Cannot decrypt request from the other side. "
-			 << "Error message: " << e.what() << endl;
-		return;
-	}
-	auto res = str_split(request.data(), "/");
-	target.write_byte('1');
-#ifdef DEBUG
-	cout << "Receive request: " << request.data() << endl;
-#endif
-	target.set_nonblocking();
-	mfcslib::progress_bar_with_speed(0, 0, true);
-	for (size_t i = SFT_FIL_NAME_START; i < res.size() - 1; i += 2) {
-		string file_name = "./" + string(res[i]);
-		from_chars(res[i + 1].data(), res[i + 1].data() + res[i + 1].size(),
-				   sizeOfFile);
-		if (sizeOfFile <= CHUNK_SIZE) {
-			total_bytes_to_receive = sizeOfFile + additional_length;
-		}
-		else {
-			total_bytes_to_receive =
-				sizeOfFile + ceil(static_cast<double>(sizeOfFile) /
-								  (chunkBufSize - additional_length)) *
-								 additional_length;
-		}
-		bytesLeft     = total_bytes_to_receive;
-		bytesReceived = 0;
-#ifdef __unix__
-		for (auto& c : file_name) {
-			if (c == '\\') {
-				c = '/';
-			}
-		}
-#endif // __unix__
-		if (file_name.back() == '\\' ||
-			file_name.back() == '/') { // it is a directory
-			fs::create_directories(file_name);
-			continue;
-		}
-#ifdef _WIN32
-		File file_output_stream(convert_string_to_wstring(file_name.data()));
-#else
-		File file_output_stream(file_name);
-#endif // _WIN32
-		cout << format("Receiving file: {}\tSize: {}", file_name, sizeOfFile)
-			 << endl;
-		if (!file_output_stream.open(true, File::iomode::WRONLY)) {
-			perror("Fail to create file");
-			while (bytesLeft > 0) {
-				ret = target.read(buffer.data(), min(bytesLeft, buffer.size()));
-				[[likely]] if (ret == SOCKET_ERROR) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Error while trying to receive from peer");
-						break;
-					}
-					continue;
-				}
-				if (ret == 0) {
-					cerr << "Target host is closed while receiving files.\n";
-					return;
-				}
-				bytesLeft -= ret;
-			}
-			continue;
-		}
-
-		if (sizeOfFile <= CHUNK_SIZE) {
-			auto bufferForFile = mfcslib::make_array<Byte>(bytesLeft);
-			while (bytesLeft > 0) {
-				ret = target.read(bufferForFile, bytesReceived, bytesLeft);
-				[[likely]] if (ret == SOCKET_ERROR) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Error while trying to receive from peer");
-						break;
-					}
-					continue;
-				}
-				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
-				bytesReceived += ret;
-				bytesLeft -= ret;
-				mfcslib::progress_bar_with_speed(bytesReceived,
-												 total_bytes_to_receive);
-			}
-			if (bytesLeft > 0) {
-				break;
-			}
-			auto decrypted_data =
-				aes.decrypt(bufferForFile.data(), bufferForFile.size());
-			if (file_output_stream.write(decrypted_data) == -1) {
-				perror("Error while trying to write to local");
-				cout << '\n';
-			}
-		}
-		else {
-			auto             buffer1 = mfcslib::make_array<Byte>(chunkBufSize);
-			auto             buffer2 = mfcslib::make_array<Byte>(chunkBufSize);
-			size_t           bytesRemain = bytesLeft;
-			auto             num         = chunkBufSize;
-			int              bufferidx   = 1;
-			TypeArray<Byte>* buffer      = &buffer1;
-			future<ssize_t>  write_res;
-
-			while (bytesLeft > 0) {
-				ret = target.read(*buffer, bytesReceived, num - bytesReceived);
-				[[likely]] if (ret == -1) {
-					[[unlikely]] if (errno != WSAEWOULDBLOCK) {
-						perror("Fail to send file");
-						break;
-					}
-					continue;
-				}
-				[[unlikely]] if (ret == 0 && bytesLeft > 0) {
-					cerr << "Connection is closed by peer before transfer is "
-							"complete."
-						 << endl;
-					break;
-				}
-				bytesReceived += ret;
-				bytesLeft -= ret;
-				mfcslib::progress_bar_with_speed(
-					total_bytes_to_receive - bytesLeft, total_bytes_to_receive);
-				[[unlikely]] if (bytesReceived == chunkBufSize) {
-					[[likely]] if (bufferidx != 1) {
-						write_res.wait();
-						ret = write_res.get();
-						[[unlikely]] if (ret == -1) {
-							perror("Fail to write file");
-							break;
-						}
-					}
-					write_res = std::async(
-						std::launch::async, decrypt_and_write,
-						std::ref(file_output_stream), std::ref(aes), buffer);
-					num           = min(chunkBufSize, bytesLeft);
-					bytesRemain   = bytesLeft;
-					bytesReceived = 0;
-					buffer        = ((++bufferidx) % 2) ? &buffer1 : &buffer2;
-				}
-			}
-			if (bytesLeft > 0) {
-				break;
-			}
-			write_res.wait();
-			auto buf = aes.decrypt(buffer->data(), bytesRemain);
-			file_output_stream.write(buf);
-		}
-		cout << '\n';
-	}
-	target.set_blocking();
 }

@@ -1,0 +1,7 @@
+{
+  "dependencies": [
+    "libsodium",
+    "bshoshany-thread-pool",
+    "tl-expected"
+  ]
+}
