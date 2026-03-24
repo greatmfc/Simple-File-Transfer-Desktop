@@ -1,0 +1,20 @@
+IndentWidth: 4
+TabWidth: 4
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterEnum: false
+  AfterStruct: false
+  SplitEmptyFunction: false
+  BeforeElse: true
+SortIncludes: Never
+BinPackArguments: true
+BinPackParameters: true
+UseTab: ForContinuationAndIndentation
+IndentCaseBlocks: false
+IndentAccessModifiers: true
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+PointerAlignment: Left
+AlignConsecutiveAssignments: AcrossEmptyLines
+AlignConsecutiveDeclarations: AcrossEmptyLinesAndComments
+AlignConsecutiveMacros: AcrossEmptyLinesAndComments

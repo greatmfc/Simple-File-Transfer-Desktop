@@ -366,9 +366,6 @@ FodyWeavers.xsd
 /include/exception.hpp
 *.exe
 *.jpg
-/.clang-format
-/.clang-tidy
-/.clangd
 /sft-windows.vcxproj
 /sft-windows.vcxproj.filters
 /makefile
@@ -377,3 +374,5 @@ FodyWeavers.xsd
 
 /build
 .vscode
+/vcpkg_installed
+compile_commands.json

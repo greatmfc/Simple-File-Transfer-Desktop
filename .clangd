@@ -1,0 +1,24 @@
+CompileFlags:            
+  CompilationDatabase: .
+  Add:
+  - -D_HAS_CXX17=1
+  - -D_HAS_CXX20=1
+  - -D_HAS_CXX23=1
+  - /std:c++latest
+
+Diagnostics:
+  ClangTidy:
+    Add: ["modernize*", "performance-*"]
+    Remove: ["clang-analyzer-*","modernize-use-trailing-return-type","modernize-avoid-c-arrays"]
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+  Designators: true
+
+Completion:
+  AllScopes: true
+
+Index:
+  Background: Build            
