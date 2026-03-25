@@ -6,6 +6,7 @@
 #include <format>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #ifdef __unix__
 #include <netinet/in.h>
 #else

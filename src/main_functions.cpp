@@ -1,6 +1,5 @@
 #include <cstring>
 #include <vector>
-#include <chrono>
 #include <array>
 #include <string>
 #include <sys/types.h>
@@ -440,7 +439,7 @@ void receive_file(sft_server& target) {
 	target.write(ack_buf.data(), buf_size);
 	// target.write_byte('1');
 #ifdef DEBUG
-	cout << "Receive request: " << request << endl;
+	cout << "Receive request: " << (const char*)buffer.data() << endl;
 #endif
 	if (requests.size() <= 2) {
 		cerr << "Receive unknown request.\n";

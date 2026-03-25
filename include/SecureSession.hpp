@@ -1,13 +1,14 @@
-﻿#include <cstring>
+﻿#ifndef SECURE_SESSION_HPP
+#define SECURE_SESSION_HPP
+
+#include "ErrorResult.h"
+#include <cstring>
 #include <functional>
-#include <unordered_set>
 #include <memory>
 #include <sodium.h>
 #include <stdexcept>
 #include <vector>
 #include <array>
-#include "coroutine.hpp"
-#include "ErrorResult.h"
 
 constexpr auto SessionPubkeyBytes = crypto_sign_PUBLICKEYBYTES;
 constexpr auto SessionSeckeyBytes = crypto_sign_SECRETKEYBYTES;
@@ -653,3 +654,5 @@ class ServerSession : public SessionBase {
 };
 
 } // namespace kotcpp
+
+#endif // SECURE_SESSION_HPP

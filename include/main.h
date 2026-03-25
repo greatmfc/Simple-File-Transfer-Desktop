@@ -1,5 +1,5 @@
-#include <memory>
 #include "sftclass.hpp"
+#include <memory>
 
 #define UDP_PORT 41541
 #define TCP_PORT 10013
