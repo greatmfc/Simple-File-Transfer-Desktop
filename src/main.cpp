@@ -144,15 +144,14 @@ string pick_network_interface() {
 
 bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 						   const vector<string>& file_list,
-						   const string& target_addr, bool is_one_time) {
+						   const string&         target_addr) {
 	auto filefds_paths = get_filefd_list(file_list);
 	if (filefds_paths.empty()) {
 		std::cerr << "No valid files to send.\n";
 		return false;
 	}
 
-	auto connect_res =
-		sft_common::establish_connection(usocket, is_one_time, target_addr);
+	auto connect_res = sft_common::establish_connection(usocket, target_addr);
 	if (!connect_res) {
 		return false;
 	}
@@ -187,8 +186,7 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 // skip discovery and directly connect to it.
 void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
 								const string& target_addr) {
-	auto connect_res =
-		sft_common::establish_connection(usocket, true, target_addr);
+	auto connect_res = sft_common::establish_connection(usocket, target_addr);
 	if (!connect_res) {
 		return;
 	}
@@ -230,13 +228,6 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
 	// Set console code page to UTF-8 to properly display messages
 	locale::global(locale("en_US.UTF-8"));
-#endif
-	if (sodium_init() == -1) {
-		fmt::println(stderr, "Initialize sodium fail.");
-		return 1;
-	}
-
-#ifdef _WIN32
 	WSADATA wsaData;
 	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
 		print_error("WSAStartup failed");
@@ -246,6 +237,11 @@ int main(int argc, char* argv[]) {
 #else
 	signal(SIGPIPE, SIG_IGN);
 #endif
+	if (sodium_init() == -1) {
+		fmt::println(stderr, "Initialize sodium fail.");
+		return 1;
+	}
+
 	std::ios::sync_with_stdio(false);
 
 	auto   config     = parse_args(get_utf8_argv(argc, argv));
@@ -274,36 +270,24 @@ int main(int argc, char* argv[]) {
 			sft_server receiver;
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
-				if (config.is_one_time) {
-					execute_receive_task(usocket, receiver,
-										 config.use_random_port);
-				}
-				else {
-					while (true) {
-						auto res = sft_common::wait_for_connection(
-							usocket, receiver, config.use_random_port, 15);
-						if (res) {
-							receive_file(receiver);
-							break;
-						}
-						else if (res.error() != WAIT_TIMEOUT) {
-							break;
-						}
-					}
-				}
+				execute_receive_task(usocket, receiver, config.use_random_port);
 			}
 		}
 		else if (mode == SftMode::TransferFiles ||
 				 mode == SftMode::TransferFolders) { // Transfer
 			sft_client sender;
+			if (config.is_one_time && config.target_addr.empty()) {
+				std::cerr
+					<< "Transfer mode requires a target address in cli mode.\n";
+				break;
+			}
 			if (sender.initialize(sec_path.string(), pub_path.string(),
 								  hosts_path.string())) {
 				auto files = sft_common::get_files_from_user(
 					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
 					execute_transfer_task(usocket, sender, files,
-										  config.target_addr,
-										  config.is_one_time);
+										  config.target_addr);
 				}
 			}
 		}
@@ -326,6 +310,11 @@ int main(int argc, char* argv[]) {
 		}
 		else if (mode == SftMode::PullReceive) {
 			sft_client receiver;
+			if (config.is_one_time && config.target_addr.empty()) {
+				std::cerr << "Pull receive mode requires a target address in "
+							 "cli mode.\n";
+				break;
+			}
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
 				execute_receiver_pull_task(usocket, receiver,

@@ -64,11 +64,5 @@ SftMode     choose_working_mode(SftMode specified_mode  = SftMode::Interactive,
 
 // Helper functions for main.cpp
 std::string pick_network_interface();
-bool        execute_transfer_task(kotcpp::udp_socket&             usocket,
-								  kotcpp::sft_client&             sender,
-								  const std::vector<std::string>& file_list,
-								  const std::string& target_addr, bool is_one_time);
-void        execute_receive_task(kotcpp::udp_socket& usocket,
-								 kotcpp::sft_server& receiver, bool use_random_port);
 
 #endif // MAIN_H

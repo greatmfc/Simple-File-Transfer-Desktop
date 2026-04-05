@@ -130,8 +130,9 @@ SftMode choose_working_mode(SftMode specified_mode, bool use_random_port) {
 			"1. Transfer files.\t"
 			"2. Transfer folders.\t";
 	cout << (use_random_port ? "3. Disable random receive port.\t"
-							 : "3. Enable random receive port.\t")
-		 << endl;
+							 : "3. Enable random receive port.\t");
+	cout << "4. Pull send mode.\t"
+			"5. Pull receive mode.\n";
 	cout << "Enter your choice: ";
 	cin >> choice;
 
@@ -145,6 +146,10 @@ SftMode choose_working_mode(SftMode specified_mode, bool use_random_port) {
 		return SftMode::TransferFolders;
 	case 3:
 		return SftMode::ToggleRandomPort;
+	case 4:
+		return SftMode::PullSend;
+	case 5:
+		return SftMode::PullReceive;
 	default:
 		return SftMode::Interactive; // 无效选择
 	}

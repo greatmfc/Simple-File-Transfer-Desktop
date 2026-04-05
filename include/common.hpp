@@ -16,11 +16,7 @@ using namespace kotcpp;
  * @param is_one_time 是否是一次性任务
  * @return Result<sockaddr_in> 用户选择的连接方式
  */
-Result<sockaddr_in> handle_discovery_failure(bool is_one_time) {
-	if (is_one_time) {
-		return tl::unexpected<string>(kotcpp::get_error_str(ECONNREFUSED));
-	}
-
+Result<sockaddr_in> handle_discovery_failure() {
 	std::cout << "\nDiscovery failed. Choose next step:\n"
 				 "0. Search again.\t"
 				 "1. Input IP and port manually.\t"
@@ -74,13 +70,11 @@ Result<sockaddr_in> parse_address(const std::string& addr_str,
  * @brief 建立连接到对等节点
  *
  * @param usocket UDP socket用于发现
- * @param is_one_time 是否是一次性任务
  * @param target_addr 目标地址（如果为空则进行发现）
  * @return Result<sockaddr_in> 连接地址结果
  */
 Result<sockaddr_in> establish_connection(kotcpp::udp_socket& usocket,
-										 bool                is_one_time,
-										 const std::string&  target_addr = "") {
+										 const std::string&  target_addr) {
 	if (!target_addr.empty()) {
 		return parse_address(target_addr);
 	}
@@ -92,7 +86,7 @@ Result<sockaddr_in> establish_connection(kotcpp::udp_socket& usocket,
 
 		if (all_hosts.empty()) {
 			std::cerr << "No peers found.\n";
-			auto result = handle_discovery_failure(is_one_time);
+			auto result = handle_discovery_failure();
 			if (result) {
 				return result;
 			}
@@ -103,11 +97,6 @@ Result<sockaddr_in> establish_connection(kotcpp::udp_socket& usocket,
 			auto connect_res = connect_to_peer(all_hosts);
 			if (connect_res) {
 				return connect_res;
-			}
-			// If selection failed/canceled, loop back to prompt
-			if (is_one_time) {
-				return tl::unexpected<string>(
-					kotcpp::get_error_str(ECONNREFUSED));
 			}
 		}
 	}
