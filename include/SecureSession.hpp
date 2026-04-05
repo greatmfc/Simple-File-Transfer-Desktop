@@ -223,7 +223,7 @@ class SessionBase {
 		Result<SizeType> encrypt(const uint8_t* plaintext,
 								 SizeType plaintextLen, uint8_t* output_pt) {
 			if (!is_ready_) {
-				return unexpected("Handshake not completed");
+				return tl::unexpected("Handshake not completed");
 			}
 
 			unsigned long long clen;
@@ -251,7 +251,7 @@ class SessionBase {
 			if (auto res =
 					this->encrypt(plaintext, plaintextLen, ciphertext.data());
 				!res) {
-				return unexpected(res.error());
+				return tl::unexpected(res.error());
 			}
 			return ciphertext;
 		}
@@ -263,10 +263,10 @@ class SessionBase {
 		Result<SizeType> decrypt(const uint8_t* ciphertext,
 								 SizeType ciphertextLen, uint8_t* output_pt) {
 			if (!is_ready_) {
-				return unexpected("Handshake not completed");
+				return tl::unexpected("Handshake not completed");
 			}
 			if (ciphertextLen < EncryptionAdditionalBytes) {
-				return unexpected("Ciphertext too short");
+				return tl::unexpected("Ciphertext too short");
 			}
 
 			unsigned long long mlen;
@@ -277,7 +277,7 @@ class SessionBase {
 				if ((DecryptionFunction(output_pt, &mlen, nullptr, ciphertext,
 										ciphertextLen, nullptr, 0, nonce_rx_,
 										rx_key_->data()) != 0)) {
-					return unexpected(
+					return tl::unexpected(
 						"Decryption failed: Tag mismatch (Tampering detected)");
 				}
 			}
@@ -295,7 +295,7 @@ class SessionBase {
 			if (auto res =
 					this->decrypt(ciphertext, ciphertextLen, plaintext.data());
 				!res) {
-				return unexpected(res.error());
+				return tl::unexpected(res.error());
 			}
 			return plaintext;
 		}
@@ -426,7 +426,7 @@ class ClientSession : public SessionBase {
 			const uint8_t* server_msg, size_t len,
 			std::function<bool(const std::string&)> check_pubkey) override {
 			if (len < ServerToClientResponseLength) {
-				return unexpected("Invalid server response size");
+				return tl::unexpected("Invalid server response size");
 			}
 
 			// 解析包结构
@@ -440,7 +440,7 @@ class ClientSession : public SessionBase {
 					crypto_sign_PUBLICKEYBYTES);
 			if (!check_pubkey(
 					get_fingerprint(yielded_pk.data(), yielded_pk.size()))) {
-				return unexpected("Server public key verification failed");
+				return tl::unexpected("Server public key verification failed");
 			}
 
 			// 2. 验证服务器签名 (Client Eph PK + Server Eph PK)
@@ -452,7 +452,7 @@ class ClientSession : public SessionBase {
 
 			if (crypto_sign_verify_detached(s_sig, verify_data.data(),
 											verify_data.size(), s_id_pk) != 0) {
-				return unexpected("Server signature verification failed");
+				return tl::unexpected("Server signature verification failed");
 			}
 
 			// 3. 计算会话密钥
@@ -467,7 +467,7 @@ class ClientSession : public SessionBase {
 				if (crypto_kx_client_session_keys(
 						rx_key_->data(), tx_key_->data(), ephemeral_pk_.data(),
 						ephemeral_sk_->data(), s_eph_pk) != 0) {
-					return unexpected("Session key generation failed");
+					return tl::unexpected("Session key generation failed");
 				}
 			}
 
@@ -532,7 +532,7 @@ class ServerSession : public SessionBase {
 		Result<std::vector<uint8_t>>
 		step1_handle_hello(const uint8_t* client_msg, size_t len) override {
 			if (len < crypto_kx_PUBLICKEYBYTES) {
-				return unexpected("Invalid client hello size");
+				return tl::unexpected("Invalid client hello size");
 			}
 			client_ephemeral_pk_cache_.assign(
 				client_msg, client_msg + crypto_kx_PUBLICKEYBYTES);
@@ -556,7 +556,7 @@ class ServerSession : public SessionBase {
 				if (crypto_kx_server_session_keys(
 						rx_key_->data(), tx_key_->data(), ephemeral_pk_.data(),
 						ephemeral_sk_->data(), client_msg) != 0) {
-					return unexpected("Server key exchange failed");
+					return tl::unexpected("Server key exchange failed");
 				}
 			}
 			ephemeral_sk_.reset(); // 销毁临时私钥
@@ -597,7 +597,7 @@ class ServerSession : public SessionBase {
 			const uint8_t* encrypted_auth, size_t len,
 			std::function<bool(const std::string&)> check_pubkey) override {
 			if (len < ClientToServerResponseLength) {
-				return unexpected("Invalid auth packet length");
+				return tl::unexpected("Invalid auth packet length");
 			}
 			// 临时开启解密能力 (为了解开 Auth 包)
 			is_ready_ = true;
@@ -609,7 +609,7 @@ class ServerSession : public SessionBase {
 					decrypt(encrypted_auth, ClientToServerResponseLength);
 				!res) {
 				is_ready_ = false;
-				return unexpected(res.error()); // 解密失败
+				return tl::unexpected(res.error()); // 解密失败
 			}
 			else {
 				plaintext = std::move(res.value());
@@ -618,7 +618,7 @@ class ServerSession : public SessionBase {
 			if (plaintext.size() !=
 				crypto_sign_PUBLICKEYBYTES + crypto_sign_BYTES) {
 				is_ready_ = false;
-				return unexpected("Invalid auth packet length"); // 格式错误
+				return tl::unexpected("Invalid auth packet length"); // 格式错误
 			}
 
 			const uint8_t* c_id_pk = plaintext.data();
@@ -631,7 +631,7 @@ class ServerSession : public SessionBase {
 			if (!check_pubkey(
 					get_fingerprint(yielded_pk.data(), yielded_pk.size()))) {
 				is_ready_ = false;
-				return unexpected("Server public key verification failed");
+				return tl::unexpected("Server public key verification failed");
 			}
 
 			// 2. 验证签名 (Server Eph PK + Client Eph PK)
@@ -645,7 +645,8 @@ class ServerSession : public SessionBase {
 			if (crypto_sign_verify_detached(c_sig, verify_data.data(),
 											verify_data.size(), c_id_pk) != 0) {
 				is_ready_ = false;
-				return unexpected("Invalid auth packet signature"); // 签名错误
+				return tl::unexpected(
+					"Invalid auth packet signature"); // 签名错误
 			}
 
 			// 握手彻底完成，通道保持打开

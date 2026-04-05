@@ -100,7 +100,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 	if (FAILED(hr)) {
 		errorMessage = convert_wstring_to_string(
 			(L"COM initializes fail: " + GetErrorMessage(hr)).c_str());
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	IFileOpenDialog* pFileOpen = nullptr;
@@ -111,7 +111,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 		errorMessage = convert_wstring_to_string(
 			(L"Cannot create dialog: " + GetErrorMessage(hr)).c_str());
 		CoUninitialize();
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	// 设置多选选项
@@ -130,7 +130,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 			(L"Cannot get/set option: " + GetErrorMessage(hr)).c_str());
 		pFileOpen->Release();
 		CoUninitialize();
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	// 显示文件对话框
@@ -140,7 +140,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 			(L"Cannot display dialog: " + GetErrorMessage(hr)).c_str());
 		pFileOpen->Release();
 		CoUninitialize();
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	// 获取选择结果
@@ -151,7 +151,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 			(L"Cannot get results: " + GetErrorMessage(hr)).c_str());
 		pFileOpen->Release();
 		CoUninitialize();
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	DWORD numItems = 0;
@@ -162,7 +162,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 		pItems->Release();
 		pFileOpen->Release();
 		CoUninitialize();
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 
 	for (DWORD i = 0; i < numItems; ++i) {
@@ -194,7 +194,7 @@ OpenFileOrFolderDialog(bool openFolder = false) {
 		return selectedFiles;
 	}
 	else {
-		return unexpected(errorMessage);
+		return tl::unexpected(errorMessage);
 	}
 }
 

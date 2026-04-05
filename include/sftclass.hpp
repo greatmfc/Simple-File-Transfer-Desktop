@@ -193,7 +193,7 @@ class sft_base : public basic_io<true> {
 				_hosts_file.open();
 				auto ret = _hosts_file.read_all_bytes();
 				if (!ret) {
-					return unexpected(get_error_str(ret.error()));
+					return tl::unexpected(get_error_str(ret.error()));
 				}
 				auto contents = str_split(ret.value().data(), "\n");
 				for (auto content : contents) {
@@ -222,12 +222,12 @@ class sft_base : public basic_io<true> {
 		// Yield 0 when the connection is not available
 		IoResult write(const Byte* buf, SizeType nbytes) const override {
 			if (!_conn.available()) {
-				co_return unexpected(ENOTCONN);
+				co_return tl::unexpected(ENOTCONN);
 			}
 
 			std::vector<uint8_t> ciphertext;
 			if (auto ret = _session->encrypt(buf, nbytes); !ret) {
-				co_return unexpected(EBADMSG);
+				co_return tl::unexpected(EBADMSG);
 			}
 			else {
 				ciphertext = std::move(ret.value());
@@ -249,7 +249,7 @@ class sft_base : public basic_io<true> {
 				co_return ret;
 			}
 			else if (ret.value() != sizeof(frameSize)) {
-				co_return unexpected(EIO);
+				co_return tl::unexpected(EIO);
 			}
 
 			SizeType bytesWritten = 0, bytesLeft = ciphertext.size(),
@@ -268,7 +268,7 @@ class sft_base : public basic_io<true> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return unexpected(ECONNRESET);
+					co_return tl::unexpected(ECONNRESET);
 				}
 				bytesWritten += ret.value();
 				bytesLeft -= ret.value();
@@ -280,7 +280,7 @@ class sft_base : public basic_io<true> {
 		// Yield bytes read when the connection is not available
 		IoResult read(Byte* buf, SizeType nbytes) const override {
 			if (!_conn.available()) {
-				co_return unexpected(ENOTCONN);
+				co_return tl::unexpected(ENOTCONN);
 			}
 
 			SizeType headerBytesRead = 0, frameSize = 0;
@@ -297,7 +297,7 @@ class sft_base : public basic_io<true> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return unexpected(ECONNRESET);
+					co_return tl::unexpected(ECONNRESET);
 				}
 				headerBytesRead += ret.value();
 			}
@@ -307,7 +307,7 @@ class sft_base : public basic_io<true> {
 
 			if (frameSize > nbytes + EncryptionAdditionalBytes ||
 				frameSize == 0) {
-				co_return unexpected(EMSGSIZE);
+				co_return tl::unexpected(EMSGSIZE);
 			}
 
 			std::vector<uint8_t> ciphertext(frameSize);
@@ -327,7 +327,7 @@ class sft_base : public basic_io<true> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return unexpected(ECONNRESET);
+					co_return tl::unexpected(ECONNRESET);
 				}
 				bytesRead += ret.value();
 			}
@@ -335,7 +335,7 @@ class sft_base : public basic_io<true> {
 			if (auto ret = _session->decrypt(ciphertext.data(),
 											 ciphertext.size(), (uint8_t*)buf);
 				!ret) {
-				co_return unexpected(EBADMSG);
+				co_return tl::unexpected(EBADMSG);
 			}
 
 			co_return bytesRead - lastRead;
@@ -400,7 +400,7 @@ class sft_client : public sft_base {
 						else {
 							return false;
 							//_conn.close();
-							// return unexpected(ECANCELED);
+							// return tl::unexpected(ECANCELED);
 						}
 					}
 					else {
@@ -409,7 +409,7 @@ class sft_client : public sft_base {
 				});
 			if (!res) {
 				_conn.close();
-				return unexpected(ECONNABORTED);
+				return tl::unexpected(ECONNABORTED);
 			}
 			std::vector<uint8_t> client_response = std::move(res.value());
 			buf_size = generate_random_port(128, 1024);
@@ -422,14 +422,14 @@ class sft_client : public sft_base {
 											 1 + EncryptionAdditionalBytes);
 				!res) {
 				_conn.close();
-				return unexpected(ECONNREFUSED);
+				return tl::unexpected(ECONNREFUSED);
 			}
 			else {
 				last_ok = std::move(res.value());
 			}
 			if (last_ok[0] != 1) {
 				_conn.close();
-				return unexpected(ECONNREFUSED);
+				return tl::unexpected(ECONNREFUSED);
 			}
 
 			return {};
@@ -441,10 +441,10 @@ class sft_client : public sft_base {
 			auto ret        = inet_pton(AF_INET, ip.data(), &addr.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return unexpected(EINVAL);
+					return tl::unexpected(EINVAL);
 				}
 				else {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 			addr.sin_port = htons(port);
@@ -463,7 +463,7 @@ class sft_server : public sft_base {
 		ResType listen_and_accept(tcp_socket& listner) {
 			auto accept_res = listner.accept();
 			if (!accept_res) {
-				return unexpected(accept_res.error());
+				return tl::unexpected(accept_res.error());
 			}
 			_conn         = std::move(*accept_res);
 			auto buf_size = generate_random_port(128, 1024);
@@ -475,7 +475,7 @@ class sft_server : public sft_base {
 			}
 			auto server_response = _session->step1_handle_hello(buf);
 			if (!server_response) {
-				return unexpected(EBADMSG);
+				return tl::unexpected(EBADMSG);
 			}
 			randombytes_buf(buf.data(), buf_size);
 			std::copy(server_response->begin(), server_response->end(),
@@ -512,13 +512,13 @@ class sft_server : public sft_base {
 				});
 			if (!res) {
 				_conn.close();
-				return unexpected(ECONNABORTED);
+				return tl::unexpected(ECONNABORTED);
 			}
 			uint8_t ok     = 1;
 			auto    ok_msg = _session->encrypt(&ok, sizeof(ok));
 			if (!ok_msg) {
 				_conn.close();
-				return unexpected(EBADMSG);
+				return tl::unexpected(EBADMSG);
 			}
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);

@@ -166,7 +166,7 @@ class File : public basic_io<false> {
 				_fd = ::open(path.c_str(), flag, 0644);
 #endif
 				if (_fd == INVALID_HANDLE_VALUE) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				_file_path = path;
 			}
@@ -229,7 +229,7 @@ class File : public basic_io<false> {
 			std::vector<char> res(this->size());
 			auto              ret = this->read(res);
 			if (!ret) {
-				return unexpected(ret.error());
+				return tl::unexpected(ret.error());
 			}
 			return res;
 		}
@@ -257,14 +257,14 @@ class File : public basic_io<false> {
 				_hMapping =
 					CreateFileMappingA(_fd, nullptr, mmode, 0, 0, nullptr);
 				if (_hMapping == nullptr) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 			if (_pData == nullptr) {
 				_pData = MapViewOfFile(_hMapping, pmmode, 0, 0, 0);
 				if (_pData == nullptr) {
 					CloseHandle(_hMapping);
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 			return (uint8_t*)_pData;
@@ -282,7 +282,7 @@ class File : public basic_io<false> {
 				_mmap_ptr =
 					(uint8_t*)mmap(nullptr, _mmap_len, mmode, pmmode, _fd, 0);
 				if (_mmap_ptr == nullptr) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				madvise(_mmap_ptr, _mmap_len, MADV_SEQUENTIAL);
 			}
@@ -307,7 +307,7 @@ class File : public basic_io<false> {
 					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				DWORD bytes_read = 0;
 				if (!ReadFile(_fd, buf, chunk_size, &bytes_read, nullptr)) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				if (bytes_read == 0) {
 					break; // EOF
@@ -326,7 +326,7 @@ class File : public basic_io<false> {
 				return ret;
 			}
 			else {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 			}
 #endif
 		}
@@ -342,7 +342,7 @@ class File : public basic_io<false> {
 					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				DWORD bytes_written = 0;
 				if (!WriteFile(_fd, buf, chunk_size, &bytes_written, nullptr)) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				if (bytes_written == 0) {
 					break; // Disk full or other issue
@@ -361,7 +361,7 @@ class File : public basic_io<false> {
 				return ret;
 			}
 			else {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 			}
 #endif
 		}
@@ -432,10 +432,10 @@ class raw_socket : public basic_io<false> {
 			auto ret = inet_pton(AF_INET, hostname.data(), &_ip_port.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return unexpected(EINVAL);
+					return tl::unexpected(EINVAL);
 				}
 				else {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 			_ip_port.sin_port = htons(port);
@@ -524,7 +524,7 @@ class raw_socket : public basic_io<false> {
 					static_cast<int>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				auto ret = ::recv(_fd, (char*)buf, chunk_size, 0);
 				if (ret < 0) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				if (ret == 0) {
 					break; // Connection closed
@@ -548,7 +548,7 @@ class raw_socket : public basic_io<false> {
 					static_cast<int>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				auto ret = ::send(_fd, (const char*)buf, chunk_size, 0);
 				if (ret < 0) {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 				if (ret == 0) {
 					break; // Connection issue
@@ -584,10 +584,10 @@ class tcp_socket : public raw_socket {
 			auto ret        = inet_pton(AF_INET, ip.data(), &addr.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return unexpected(EINVAL);
+					return tl::unexpected(EINVAL);
 				}
 				else {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 			addr.sin_port = htons(port);
@@ -601,7 +601,7 @@ class tcp_socket : public raw_socket {
 			_ip_port = addr;
 			if (::connect(_fd, (struct sockaddr*)&_ip_port, sizeof(_ip_port)) <
 				0) {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 			}
 			return 0;
 		}
@@ -622,7 +622,7 @@ class tcp_socket : public raw_socket {
 				// return SOCKET_ERROR;
 			}
 			if (::listen(_fd, n) < 0) {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 				// return SOCKET_ERROR;
 			}
 			return 0;
@@ -633,7 +633,7 @@ class tcp_socket : public raw_socket {
 			memset(&addrs, 0, len);
 			auto ret = ::accept(_fd, (sockaddr*)&addrs, &len);
 			if (ret == INVALID_SOCKET) {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 			}
 			return tcp_socket(ret, addrs);
 		}
@@ -681,10 +681,10 @@ class udp_socket : public raw_socket {
 			auto ret = inet_pton(AF_INET, ip.data(), &target_udp_addr.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return unexpected(EINVAL);
+					return tl::unexpected(EINVAL);
 				}
 				else {
-					return unexpected((int)GetLastError());
+					return tl::unexpected((int)GetLastError());
 				}
 			}
 
@@ -692,7 +692,7 @@ class udp_socket : public raw_socket {
 						   (const struct sockaddr*)&target_udp_addr,
 						   sizeof(struct sockaddr));
 			if (ret < 0) {
-				return unexpected((int)GetLastError());
+				return tl::unexpected((int)GetLastError());
 			}
 			return ret;
 		}

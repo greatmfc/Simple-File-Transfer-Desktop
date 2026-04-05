@@ -39,7 +39,7 @@ using optval_t = int;
 using HANDLE   = int;
 using DWORD    = int;
 #endif
-#define RETERROR return unexpected((int)GetLastError())
+#define RETERROR return tl::unexpected((int)GetLastError())
 
 namespace kotcpp {
 

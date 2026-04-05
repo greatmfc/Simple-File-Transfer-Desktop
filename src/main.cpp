@@ -2,18 +2,11 @@
 #include "common.hpp"
 #include <cstring>
 #include <sodium.h>
+
 #ifdef _WIN32
 #include <WinSock2.h>
 #include <fileapi.h>
 
-struct NameIP {
-		std::string name;
-		std::string ip;
-};
-extern expected<std::vector<std::string>, std::string>
-								OpenFileOrFolderDialog(bool openFolder = false);
-extern bool                     ConfigureFirewall();
-extern std::vector<NameIP>      GetIPv4BroadcastAddresses();
 extern std::vector<std::string> get_utf8_argv(int argc, char** argv);
 #else
 #include <csignal>
