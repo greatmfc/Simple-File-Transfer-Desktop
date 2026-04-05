@@ -323,6 +323,9 @@ bool send_file(sft_base&                                      target,
 		file_sz    = file->size();
 		bytes_left = file_sz;
 		have_send  = 0;
+		if (file_sz == 0) {
+			continue;
+		}
 
 		if (file_sz <= CHUNKSZ) {
 			auto buf = vector<Byte>(file_sz);
@@ -511,6 +514,9 @@ void receive_file(sft_base& target) {
 						std::min(bytesLeft, (SizeType)buffer.size()));
 				}
 			}
+			continue;
+		}
+		if (sizeOfFile == 0) {
 			continue;
 		}
 
