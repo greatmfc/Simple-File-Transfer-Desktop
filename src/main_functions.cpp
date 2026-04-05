@@ -639,14 +639,19 @@ int configure_options() {
 }
 
 vector<tuple<unique_ptr<File>, string>>
-get_filefd_list(const vector<string_type>& path_list) {
+get_filefd_list(const vector<string>& path_list) {
 	vector<tuple<unique_ptr<File>, string>> result;
 	for (const auto& path : path_list) {
 		if (fs::is_directory(path)) {
 			// Get folder name using std::filesystem
-			string folderName = fs::path(path).filename().string();
+			string folderName = path;
+			if (folderName.back() == '/' || folderName.back() == '\\') {
+				folderName.pop_back();
+			}
+			folderName = fs::path(folderName).filename().string();
+			folderName += '\\';
 
-			result.emplace_back(nullptr, folderName + '\\');
+			result.emplace_back(nullptr, folderName);
 			for (const auto& entry : fs::recursive_directory_iterator(path)) {
 				if (entry.is_regular_file()) {
 					auto f = make_unique<File>(entry.path());
@@ -661,7 +666,7 @@ get_filefd_list(const vector<string_type>& path_list) {
 						}
 #endif // __unix__
 						result.emplace_back(std::move(f),
-											(folderName + '\\') += relative);
+											folderName + relative);
 					}
 					else {
 						print_error(format("Cannot open file: {}",
@@ -680,8 +685,7 @@ get_filefd_list(const vector<string_type>& path_list) {
 						}
 					}
 #endif // __unix__
-					result.emplace_back(nullptr,
-										folderName + '\\' += relative += '\\');
+					result.emplace_back(nullptr, folderName + relative + '\\');
 				}
 				else {
 					cerr << format(

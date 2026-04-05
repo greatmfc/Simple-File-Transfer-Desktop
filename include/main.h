@@ -57,7 +57,7 @@ void    receive_file(kotcpp::sft_base& target);
 Result<sockaddr_in> manual_connect_to_peer();
 
 vector<tuple<std::unique_ptr<File>, string>>
-			get_filefd_list(const vector<string_type>& path_list);
+			get_filefd_list(const vector<string>& path_list);
 
 SftMode     choose_working_mode(SftMode specified_mode  = SftMode::Interactive,
 								bool    use_random_port = false);

@@ -107,10 +107,9 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 			// direct file list
 			config.mode = SftMode::TransferFiles;
 			// config.is_one_time    = true;
-			config.file_list.push_back(argv[i]);
-		}
-		else if (config.mode == SftMode::TransferFiles) {
-			config.file_list.push_back(argv[i]);
+			while (i < argv.size()) {
+				config.file_list.push_back(argv[i++]);
+			}
 		}
 	}
 	return config;
