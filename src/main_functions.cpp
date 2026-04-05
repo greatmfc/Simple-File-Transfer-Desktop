@@ -42,7 +42,7 @@ using namespace std;
 using namespace kotcpp;
 
 static sft_header      sh;
-static BS::thread_pool pool;
+static BS::thread_pool pool(4);
 constexpr SizeType     CHUNKSZ = 4'194'304;
 // constexpr SizeType     CHUNKSZ = 1'048'576;
 #ifdef DEBUG
@@ -117,12 +117,12 @@ ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 	return all_hosts.size();
 }
 
-int choose_working_mode(int specified_mode, bool use_random_port) {
+SftMode choose_working_mode(SftMode specified_mode, bool use_random_port) {
 	int choice = 0;
 
 	// cout << "\033c";
 	cout << info << endl;
-	if (specified_mode != -1) {
+	if (specified_mode != SftMode::Interactive) {
 		return specified_mode;
 	}
 	cout << "\nChoose a mode for program to work:\n"
@@ -134,7 +134,20 @@ int choose_working_mode(int specified_mode, bool use_random_port) {
 		 << endl;
 	cout << "Enter your choice: ";
 	cin >> choice;
-	return choice;
+
+	// 映射整数值到SftMode枚举
+	switch (choice) {
+	case 0:
+		return SftMode::Receive;
+	case 1:
+		return SftMode::TransferFiles;
+	case 2:
+		return SftMode::TransferFolders;
+	case 3:
+		return SftMode::ToggleRandomPort;
+	default:
+		return SftMode::Interactive; // 无效选择
+	}
 }
 
 // Connect to target sft peer.
@@ -267,7 +280,7 @@ bad:
 	return tl::unexpected(GetLastError());
 }
 
-bool send_file(sft_client&                                    target,
+bool send_file(sft_base&                                      target,
 			   const vector<tuple<unique_ptr<File>, string>>& files) {
 	[[maybe_unused]] off_t off     = 0;
 	SizeType               file_sz = 0, bytes_left = 0, have_send = 0, num = 0;
@@ -410,7 +423,7 @@ bool send_file(sft_client&                                    target,
 
 // No need to close file manually.
 // It is caller's responsibility to initialize target.
-void receive_file(sft_server& target) {
+void receive_file(sft_base& target) {
 	vector<Byte>              buffer(CHUNKSZ);
 	// vector<Byte>              request(1024);
 	SizeType                  sizeOfFile = 0, bytesReceived = 0, bytesLeft = 0;

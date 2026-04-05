@@ -393,6 +393,8 @@ class sft_client : public sft_base {
 						if (choice == 'y' || choice == 'Y') {
 							_known_hosts.insert(fp);
 							_hosts_file.write(fp + '\n');
+							fmt::print("Please check the other side to accept "
+									   "the connection.\n");
 							return true;
 						}
 						else {

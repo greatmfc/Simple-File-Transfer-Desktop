@@ -1,4 +1,5 @@
 #include "main.h"
+#include "common.hpp"
 #include <cstring>
 #include <sodium.h>
 #ifdef _WIN32
@@ -35,7 +36,7 @@ using namespace kotcpp;
 extern string info;
 
 struct sft_config {
-		int specified_mode = -1; // -1: invalid/unset, 0: receive, 1: transfer
+		SftMode        mode        = SftMode::Interactive;
 		string         target_addr = "";
 		vector<string> file_list;
 		bool           is_one_time     = false;
@@ -50,14 +51,17 @@ void print_help() {
 		"  -h, --help                Print this message.\n"
 		"  -r, --receive             Enable receive mode for one-time task.\n"
 		"  -t, --transfer [FILES...] Enable transfer mode for one-time task.\n"
+		"  -p, --pull [FILES...]     Enable pull mode: wait for receiver to connect or actively connect to sender to pull files. It must be combined with either -r or -t.\n"
 		"  -a, --addr <ip:port>      Directly connect to specified address (skips discovery).\n"
 		"\n"
-		"Interactive Mode: Run without -r or -t to enter interactive menu.\n"
+		"Interactive Mode: Run without -r, -t or -p to enter interactive menu.\n"
 		"Examples: \n"
 		"  simple-file-transfer                           # Interactive mode\n"
 		"  simple-file-transfer -r                        # One-time receive\n"
 		"  simple-file-transfer -t file1 dir1/       	  # One-time transfer\n"
-		"  simple-file-transfer -t file1 -a 1.2.3.4:1234  # Direct transfer"
+		"  simple-file-transfer -t file1 -a 1.2.3.4:1234  # Direct transfer\n"
+		"  simple-file-transfer -rp -a 1.2.3.4:1234     # One-time receive and pull files from target\n"
+		"  simple-file-transfer -tp file1 dir1/         # One-time transfer and waiting for clients to pull"
     );
 	// clang-format on
 }
@@ -70,30 +74,42 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 			exit(0);
 		}
 		else if (argv[i] == "-r" || argv[i] == "--receive") {
-			config.specified_mode = 0;
-			config.is_one_time    = true;
+			config.mode        = SftMode::Receive;
+			config.is_one_time = true;
 		}
 		else if (argv[i] == "-t" || argv[i] == "--transfer") {
-			config.specified_mode = 1;
-			config.is_one_time    = true;
+			config.mode        = SftMode::TransferFiles;
+			config.is_one_time = true;
 			// Collect subsequent arguments as files until another flag is met
 			while (i + 1 < argv.size() && !argv[i + 1].starts_with("-")) {
 				config.file_list.push_back(argv[++i]);
 			}
+		}
+		else if (argv[i] == "-tp" || argv[i] == "-pt") {
+			config.mode        = SftMode::PullSend;
+			config.is_one_time = true;
+			// Collect subsequent arguments as files until another flag is met
+			while (i + 1 < argv.size() && !argv[i + 1].starts_with("-")) {
+				config.file_list.push_back(argv[++i]);
+			}
+		}
+		else if (argv[i] == "-rp" || argv[i] == "-pr") {
+			config.mode        = SftMode::PullReceive;
+			config.is_one_time = true;
 		}
 		else if (argv[i] == "-a" || argv[i] == "--addr") {
 			if (i + 1 < argv.size()) {
 				config.target_addr = argv[++i];
 			}
 		}
-		else if (config.specified_mode == -1) {
+		else if (config.mode == SftMode::Interactive) {
 			// If no mode set yet, assume transfer mode for drag-and-drop or
 			// direct file list
-			config.specified_mode = 1;
+			config.mode = SftMode::TransferFiles;
 			// config.is_one_time    = true;
 			config.file_list.push_back(argv[i]);
 		}
-		else if (config.specified_mode == 1) {
+		else if (config.mode == SftMode::TransferFiles) {
 			config.file_list.push_back(argv[i]);
 		}
 	}
@@ -135,74 +151,8 @@ bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 		return false;
 	}
 
-	Result<sockaddr_in> connect_res;
-	if (!target_addr.empty()) {
-		// Manual address from CLI
-		auto     colon_pos = target_addr.find(':');
-		string   ip        = target_addr.substr(0, colon_pos);
-		uint16_t port =
-			(colon_pos != string::npos)
-				? static_cast<uint16_t>(stoi(target_addr.substr(colon_pos + 1)))
-				: TCP_PORT;
-
-		sockaddr_in addr{};
-		addr.sin_family = AF_INET;
-		inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
-		addr.sin_port = htons(port);
-		connect_res   = addr;
-	}
-	else {
-		// Discovery Loop
-		while (true) {
-			vector<sft_respond_struct> all_hosts;
-			(void)search_for_sft_peers(usocket, 3, all_hosts);
-
-			if (all_hosts.empty()) {
-				std::cerr << "No peers found.\n";
-				if (is_one_time) {
-					return false;
-				}
-
-				std::cout << "\nDiscovery failed. Choose next step:\n"
-							 "0. Search again.\t"
-							 "1. Input IP and port manually.\t"
-							 "2. Return to initial menu.\n"
-							 "Enter your choice: ";
-				int choice = 0;
-				if (!(std::cin >> choice)) {
-					std::cin.clear();
-					std::cin.ignore(10000, '\n');
-					return false;
-				}
-
-				if (choice == 0) {
-					continue;
-				}
-				else if (choice == 1) {
-					connect_res = manual_connect_to_peer();
-					if (connect_res) {
-						break;
-					}
-					// If manual connect failed, loop back to prompt
-					continue;
-				}
-				else {
-					return false;
-				}
-			}
-			else {
-				connect_res = connect_to_peer(all_hosts);
-				if (connect_res) {
-					break;
-				}
-				// If selection failed/canceled, loop back to prompt
-				if (is_one_time) {
-					return false;
-				}
-			}
-		}
-	}
-
+	auto connect_res =
+		sft_common::establish_connection(usocket, is_one_time, target_addr);
 	if (!connect_res) {
 		return false;
 	}
@@ -219,8 +169,8 @@ bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 						  bool use_random_port) {
 	while (true) {
-		auto res =
-			wait_for_peers_to_connect(usocket, receiver, 15, use_random_port);
+		auto res = sft_common::wait_for_connection(usocket, receiver,
+												   use_random_port, 15);
 		if (!res) {
 			if (res.error() == WAIT_TIMEOUT) {
 				continue;
@@ -229,6 +179,49 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 			break;
 		}
 		receive_file(receiver);
+		break; // Exit after one successful receive in one-time mode
+	}
+}
+
+// Maybe the pulling side should know it's target address in advance, so we can
+// skip discovery and directly connect to it.
+void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
+								const string& target_addr) {
+	auto connect_res =
+		sft_common::establish_connection(usocket, true, target_addr);
+	if (!connect_res) {
+		return;
+	}
+
+	auto ret = receiver.connect(connect_res.value());
+	if (!ret) {
+		print_error("Connect failed", ret);
+		return;
+	}
+
+	return receive_file(receiver);
+}
+
+void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
+							  const vector<string>& file_list,
+							  bool                  use_random_port) {
+	auto filefds_paths = get_filefd_list(file_list);
+	if (filefds_paths.empty()) {
+		std::cerr << "No valid files to send.\n";
+		return;
+	}
+
+	while (true) {
+		auto res = sft_common::wait_for_connection(usocket, sender,
+												   use_random_port, 15);
+		if (!res) {
+			if (res.error() == WAIT_TIMEOUT) {
+				continue;
+			}
+			print_error("Wait for connect failed", res);
+			break;
+		}
+		send_file(sender, filefds_paths);
 		break; // Exit after one successful receive in one-time mode
 	}
 }
@@ -275,10 +268,9 @@ int main(int argc, char* argv[]) {
 		(void)usocket.setsockopt(SOL_SOCKET, SO_BROADCAST, &optval,
 								 sizeof(optval));
 
-		int mode =
-			choose_working_mode(config.specified_mode, config.use_random_port);
+		SftMode mode = choose_working_mode(config.mode, config.use_random_port);
 
-		if (mode == 0) { // Receive
+		if (mode == SftMode::Receive) {
 			sft_server receiver;
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
@@ -288,8 +280,8 @@ int main(int argc, char* argv[]) {
 				}
 				else {
 					while (true) {
-						auto res = wait_for_peers_to_connect(
-							usocket, receiver, 15, config.use_random_port);
+						auto res = sft_common::wait_for_connection(
+							usocket, receiver, config.use_random_port, 15);
 						if (res) {
 							receive_file(receiver);
 							break;
@@ -301,28 +293,13 @@ int main(int argc, char* argv[]) {
 				}
 			}
 		}
-		else if (mode == 1 || mode == 2) { // Transfer
+		else if (mode == SftMode::TransferFiles ||
+				 mode == SftMode::TransferFolders) { // Transfer
 			sft_client sender;
 			if (sender.initialize(sec_path.string(), pub_path.string(),
 								  hosts_path.string())) {
-				vector<string> files = config.file_list;
-				if (files.empty()) {
-#ifdef _WIN32
-					auto diag_res = OpenFileOrFolderDialog(mode == 2);
-					if (diag_res) {
-						files = diag_res.value();
-					}
-#else
-					std::cout << "Enter paths: ";
-					string p;
-					while (cin >> p) {
-						files.push_back(p);
-						if (cin.peek() == '\n') {
-							break;
-						}
-					}
-#endif
-				}
+				auto files = sft_common::get_files_from_user(
+					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
 					execute_transfer_task(usocket, sender, files,
 										  config.target_addr,
@@ -330,17 +307,37 @@ int main(int argc, char* argv[]) {
 				}
 			}
 		}
-		else if (mode == 3) {
+		else if (mode == SftMode::ToggleRandomPort) {
 			config.use_random_port = !config.use_random_port;
 			std::cout << "\033c";
 			continue;
+		}
+		else if (mode == SftMode::PullSend) {
+			sft_server sender;
+			if (sender.initialize(sec_path.string(), pub_path.string(),
+								  hosts_path.string())) {
+				auto files = sft_common::get_files_from_user(
+					config.file_list, mode == SftMode::TransferFolders);
+				if (!files.empty()) {
+					execute_sender_pull_task(usocket, sender, files,
+											 config.use_random_port);
+				}
+			}
+		}
+		else if (mode == SftMode::PullReceive) {
+			sft_client receiver;
+			if (receiver.initialize(sec_path.string(), pub_path.string(),
+									hosts_path.string())) {
+				execute_receiver_pull_task(usocket, receiver,
+										   config.target_addr);
+			}
 		}
 
 		if (config.is_one_time) {
 			break;
 		}
-		config.specified_mode =
-			-1; // Reset for next iteration in interactive mode
+		config.mode = SftMode::Interactive; // Reset for next iteration in
+											// interactive mode
 		config.file_list.clear();
 		config.target_addr = "";
 	}
