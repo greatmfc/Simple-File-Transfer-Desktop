@@ -310,6 +310,26 @@ void test_send_file_large(const fs::path& temp_root) {
 			"send_file large-file payload mismatch");
 }
 
+void test_send_file_exact_chunk(const fs::path& temp_root) {
+	const auto     contents =
+		make_patterned_bytes(static_cast<size_t>(
+			sft_detail::transfer_chunk_size));
+	const fs::path input_path = temp_root / "send_exact_chunk.bin";
+	write_bytes_to_file(input_path, contents);
+
+	std::vector<std::tuple<std::unique_ptr<kotcpp::File>, std::string>> files;
+	files.emplace_back(open_file_for_send(input_path), "exact_chunk.bin");
+
+	SendFileTarget target;
+	require(send_file(target, files),
+			"send_file exact-chunk test returned false");
+	require(target.request() ==
+				build_request_header({{"exact_chunk.bin", contents.size()}}),
+			"send_file generated an unexpected exact-chunk request header");
+	require(target.payload() == contents,
+			"send_file exact-chunk payload mismatch");
+}
+
 void test_receive_file_small(const fs::path& temp_root) {
 	const auto        file_contents = to_bytes("hello world");
 	const std::string request =
@@ -390,6 +410,82 @@ void test_receive_file_large(const fs::path& temp_root) {
 	require_ack_sequence(target);
 }
 
+void test_receive_file_exact_chunk(const fs::path& temp_root) {
+	const auto contents =
+		make_patterned_bytes(static_cast<size_t>(
+			sft_detail::transfer_chunk_size));
+	const std::string request =
+		build_request_header({{"exact_chunk.bin", contents.size()}});
+	const fs::path output_dir = temp_root / "receive_exact_chunk";
+
+	fs::create_directories(output_dir);
+	ScopedCurrentPath scoped_path(output_dir);
+
+	ReceiveFileTarget target(request, contents);
+	receive_file(target);
+
+	require(read_file_bytes(output_dir / "exact_chunk.bin") == contents,
+			"receive_file exact-chunk content mismatch");
+	require_ack_sequence(target);
+}
+
+void test_receive_file_nested_backslash_path(const fs::path& temp_root) {
+	const auto        file_contents = to_bytes("nested data");
+	const std::string request =
+		build_request_header({{"nested\\folder\\received.txt",
+							   file_contents.size()}});
+	const fs::path output_dir = temp_root / "receive_nested";
+
+	fs::create_directories(output_dir);
+	ScopedCurrentPath scoped_path(output_dir);
+
+	ReceiveFileTarget target(request, file_contents);
+	receive_file(target);
+
+	require(read_file_bytes(output_dir / "nested" / "folder" / "received.txt") ==
+				file_contents,
+			"receive_file should create nested directories for backslash paths");
+	require_ack_sequence(target);
+}
+
+void test_receive_file_rejects_parent_traversal(const fs::path& temp_root) {
+	const auto rejected = to_bytes("blocked");
+	const auto safe     = to_bytes("safe");
+	const auto payload  = concatenate_bytes({rejected, safe});
+	const std::string request =
+		build_request_header({{"..\\escape.txt", rejected.size()},
+							  {"safe.txt", safe.size()}});
+	const fs::path output_dir = temp_root / "receive_traversal";
+
+	fs::create_directories(output_dir);
+	ScopedCurrentPath scoped_path(output_dir);
+
+	ReceiveFileTarget target(request, payload);
+	receive_file(target);
+
+	require(!fs::exists(temp_root / "escape.txt"),
+			"receive_file should reject parent traversal paths");
+	require(read_file_bytes(output_dir / "safe.txt") == safe,
+			"receive_file should continue after rejecting traversal path");
+	require_ack_sequence(target);
+}
+
+void test_receive_file_invalid_request(const fs::path& temp_root) {
+	const std::string request = "sft1.1/FIL/bad.txt/not-a-number";
+	const fs::path    output_dir = temp_root / "receive_invalid";
+
+	fs::create_directories(output_dir);
+	ScopedCurrentPath scoped_path(output_dir);
+
+	ReceiveFileTarget target(request, {});
+	receive_file(target);
+
+	require(target.ack_history().empty(),
+			"receive_file should not acknowledge an invalid request");
+	require(!fs::exists(output_dir / "bad.txt"),
+			"receive_file should not create files for invalid requests");
+}
+
 } // namespace
 
 int main() {
@@ -411,10 +507,15 @@ int main() {
 		test_send_file_empty(temp_root);
 		test_send_file_multiple(temp_root);
 		test_send_file_large(temp_root);
+		test_send_file_exact_chunk(temp_root);
 		test_receive_file_small(temp_root);
 		test_receive_file_empty(temp_root);
 		test_receive_file_multiple(temp_root);
 		test_receive_file_large(temp_root);
+		test_receive_file_exact_chunk(temp_root);
+		test_receive_file_nested_backslash_path(temp_root);
+		test_receive_file_rejects_parent_traversal(temp_root);
+		test_receive_file_invalid_request(temp_root);
 		fs::remove_all(temp_root);
 		std::cout << "main_transfer_test passed\n";
 		return 0;
