@@ -4,6 +4,7 @@
 #include "util.hpp"
 #include "ErrorResult.h"
 #include "coroutine.hpp"
+#include <concepts>
 #include <cstring> // For memset, memcpy
 #include <utility>
 #include <filesystem>
@@ -11,46 +12,20 @@ namespace fs = std::filesystem;
 
 namespace kotcpp {
 
-template <bool IsAsync> struct io_traits;
-
-template <> struct io_traits<false> {
-		using Result = ResType;
-};
-
-template <> struct io_traits<true> {
-		using Result = Task<ResType>;
-};
-
-template <bool IsAsync = false> class basic_io {
-
+template <class Derived> class io_overloads {
 	public:
-		basic_io()          = default;
-		virtual ~basic_io() = default;
-
-		using IoResult      = typename io_traits<IsAsync>::Result;
-		// Return success when ret>=0, otherwise unexpected
-		virtual IoResult read(Byte* buf, SizeType nbytes) const = 0;
-		// Return success when ret>=0, otherwise unexpected
-		virtual IoResult write(const Byte* buf, SizeType nbytes) const = 0;
-		virtual bool     available() const                             = 0;
-
-		Byte             read_byte() const {
-            Byte charc = (Byte)-1;
-            this->read(&charc, 1);
-            return charc;
-		}
-
 		auto read(vector<Byte>& buf, SizeType pos, SizeType sz) const {
 #ifdef DEBUG
 			auto len = buf.size();
-			if (pos >= len || sz > len || pos + sz > len)
+			if (pos >= len || sz > len || pos + sz > len) {
 				throw std::out_of_range("In read, pos or sz is out of range.");
+			}
 #endif
-			return this->read(buf.data() + pos, sz);
+			return self().read(buf.data() + pos, sz);
 		}
 
 		template <buffer_type T> auto read(T& buf) const {
-			return this->read((Byte*)buf.data(), buf.size());
+			return self().read((Byte*)buf.data(), buf.size());
 		}
 
 		auto read_buf(vector<Byte>* buf) const {
@@ -60,14 +35,15 @@ template <bool IsAsync = false> class basic_io {
 		auto write(const vector<Byte>& buf, SizeType pos, SizeType sz) const {
 #ifdef DEBUG
 			auto len = buf.size();
-			if (len != 0 && (pos >= len || sz > len || pos + sz > len))
+			if (len != 0 && (pos >= len || sz > len || pos + sz > len)) {
 				throw std::out_of_range("In write, pos or sz is out of range.");
+			}
 #endif
-			return this->write(buf.data() + pos, sz);
+			return self().write(buf.data() + pos, sz);
 		}
 
 		template <buffer_type T> auto write(const T& buf) const {
-			return this->write((const Byte*)buf.data(), buf.size());
+			return self().write((const Byte*)buf.data(), buf.size());
 		}
 
 		auto write_buf(vector<Byte>* buf) const {
@@ -79,19 +55,31 @@ template <bool IsAsync = false> class basic_io {
 		}
 
 		auto write_byte(Byte c) const {
-			return this->write(&c, 1);
+			return self().write(&c, 1);
 		}
 
-		virtual void close() = 0;
+	private:
+		const Derived& self() const {
+			return static_cast<const Derived&>(*this);
+		}
 };
 
-class File : public basic_io<false> {
+template <class T>
+concept AsyncTransferTarget =
+	requires(T target, Byte* read_buf, const Byte* write_buf, SizeType nbytes) {
+		{ target.read(read_buf, nbytes) } -> std::same_as<Task<ResType>>;
+		{ target.write(write_buf, nbytes) } -> std::same_as<Task<ResType>>;
+		{ target.set_blocking() } -> std::convertible_to<int>;
+		{ target.set_nonblocking() } -> std::convertible_to<int>;
+	};
+
+class File : public io_overloads<File> {
 	protected:
 		HANDLE _fd = INVALID_HANDLE_VALUE;
 
 	public:
-		using basic_io::read;
-		using basic_io::write;
+		using io_overloads<File>::read;
+		using io_overloads<File>::write;
 		enum iomode {
 			RDONLY,
 			WRONLY,
@@ -214,7 +202,7 @@ class File : public basic_io<false> {
 		std::uintmax_t size() const {
 			return file_size(_file_path);
 		}
-		void close() override {
+		void close() {
 			if (_fd != INVALID_HANDLE_VALUE) {
 #ifdef _WIN32
 				CloseHandle(_fd);
@@ -290,13 +278,13 @@ class File : public basic_io<false> {
 #endif
 		}
 
-		bool available() const override {
+		bool available() const {
 			return _fd != INVALID_HANDLE_VALUE;
 		}
 		HANDLE get_fd() const {
 			return _fd;
 		}
-		ResType read(Byte* buf, SizeType nbytes) const override {
+		ResType read(Byte* buf, SizeType nbytes) const {
 #ifdef _WIN32
 			// Windows DWORD is 32-bit, max ~4GB per call. Use chunks for large
 			// reads.
@@ -331,7 +319,7 @@ class File : public basic_io<false> {
 #endif
 		}
 		// Return success when ret>=0, otherwise unexpected
-		ResType write(const Byte* buf, SizeType nbytes) const override {
+		ResType write(const Byte* buf, SizeType nbytes) const {
 #ifdef _WIN32
 			// Windows DWORD is 32-bit, max ~4GB per call. Use chunks for large
 			// writes.
@@ -380,7 +368,7 @@ class File : public basic_io<false> {
 #endif // _WIN32
 };
 
-class raw_socket : public basic_io<false> {
+class raw_socket : public io_overloads<raw_socket> {
 
 	public:
 		raw_socket()                  = default;
@@ -398,8 +386,8 @@ class raw_socket : public basic_io<false> {
 		~raw_socket() {
 			this->close();
 		}
-		using basic_io::read;
-		using basic_io::write;
+		using io_overloads<raw_socket>::read;
+		using io_overloads<raw_socket>::write;
 
 		ResType initialize(int domain = AF_INET, int type = SOCK_STREAM,
 						   int protocol = IPPROTO_IP) {
@@ -501,10 +489,10 @@ class raw_socket : public basic_io<false> {
 #endif
 		}
 
-		bool available() const override {
+		bool available() const {
 			return _fd != INVALID_SOCKET;
 		}
-		void close() override {
+		void close() {
 			if (_fd != INVALID_SOCKET) {
 #ifdef _WIN32
 				::closesocket(_fd);
@@ -514,7 +502,7 @@ class raw_socket : public basic_io<false> {
 				_fd = INVALID_SOCKET;
 			}
 		}
-		ResType read(Byte* buf, SizeType nbytes) const override {
+		ResType read(Byte* buf, SizeType nbytes) const {
 			// recv/send use int for length, max ~2GB per call. Use chunks for
 			// safety.
 			constexpr int MAX_CHUNK  = 0x7FFFFFFF;
@@ -538,7 +526,7 @@ class raw_socket : public basic_io<false> {
 			}
 			return total_read;
 		}
-		ResType write(const Byte* buf, SizeType nbytes) const override {
+		ResType write(const Byte* buf, SizeType nbytes) const {
 			// recv/send use int for length, max ~2GB per call. Use chunks for
 			// safety.
 			constexpr int MAX_CHUNK     = 0x7FFFFFFF;

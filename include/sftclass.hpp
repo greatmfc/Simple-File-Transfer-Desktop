@@ -125,103 +125,177 @@ inline std::string vector_to_string(const std::vector<uint8_t>& v) {
 	return res.data();
 }
 
-// This base class guarantees transparent transmission that all encryption is
-// done within the member function.
-class sft_base : public basic_io<true> {
+class sft_identity {
+	private:
+		SecureKey _sec;
+		PubKeyArray _pub{};
 
-	protected:
-		static inline std::unordered_set<std::string> _known_hosts;
-		static inline File                            _hosts_file;
-		static inline bool                            _is_init = false;
-		static inline PubKeyArray                     _pub{};
-
-		SecureKey                                     _sec;
-		tcp_socket                                    _conn;
-		std::unique_ptr<SessionBase>                  _session;
-
-		Result<void> _initialize(const string_type& sec_path,
-								 const string_type& pub_path,
-								 const string_type& hosts_path,
-								 bool               is_client) {
+	public:
+		Result<void> initialize(const string_type& sec_path,
+								const string_type& pub_path) {
 			File sec_file(sec_path);
-			if (_is_init) {
-				ScopedWriteAccess w(_sec);
-				sec_file.open_read_only();
-				sec_file.read(_sec.data(), _sec.size());
-				if (is_client) {
-					_session =
-						std::make_unique<ClientSession>(_pub, _sec.data());
-				}
-				else {
-					_session =
-						std::make_unique<ServerSession>(_pub, _sec.data());
-				}
-				return {};
-			}
 			File pub_file(pub_path);
 
-			_hosts_file = hosts_path;
 			{
 				ScopedWriteAccess w(_sec);
 				if (sec_file.is_exist() &&
 					sec_file.size() == SessionSeckeyBytes &&
 					pub_file.is_exist() &&
 					pub_file.size() == SessionPubkeyBytes) {
-					sec_file.open_read_only();
-					pub_file.open_read_only();
-					sec_file.read(_sec.data(), _sec.size());
-					pub_file.read(_pub);
+					if (auto ret = sec_file.open_read_only(); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret =
+							sec_file.read(_sec.data(), (SizeType)_sec.size());
+						!ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret = pub_file.open_read_only(); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret = pub_file.read(_pub); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
 				}
 				else {
 					crypto_sign_keypair(_pub.data(), _sec.data());
-					sec_file.open(true);
-					pub_file.open(true);
-					sec_file.write(_sec.data(), _sec.size());
-					pub_file.write(_pub);
-				}
-				if (is_client) {
-					_session =
-						std::make_unique<ClientSession>(_pub, _sec.data());
-				}
-				else {
-					_session =
-						std::make_unique<ServerSession>(_pub, _sec.data());
+					if (auto ret = sec_file.open(true); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret =
+							sec_file.write(_sec.data(), (SizeType)_sec.size());
+						!ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret = pub_file.open(true); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
+					if (auto ret = pub_file.write(_pub); !ret) {
+						return tl::unexpected(get_error_str(ret.error()));
+					}
 				}
 			}
 
-			if (_hosts_file.is_exist() && _hosts_file.size() > 0) {
-				_hosts_file.open();
-				auto ret = _hosts_file.read_all_bytes();
-				if (!ret) {
-					return tl::unexpected(get_error_str(ret.error()));
-				}
-				auto contents = str_split(ret.value().data(), "\n");
-				for (auto content : contents) {
-					auto host = std::string(content.begin(), content.end());
-					_known_hosts.insert(host);
-				}
-			}
-			else {
-				_hosts_file.open(true);
-			}
-			_is_init = true;
-			fmt::println("The fingerprint of local public key is {}",
-						 get_fingerprint(_pub.data(), _pub.size()));
 			return {};
 		}
 
+		std::unique_ptr<SessionBase> create_client_session() const {
+			ScopedReadAccess r(_sec);
+			return std::make_unique<ClientSession>(_pub, _sec.data());
+		}
+
+		std::unique_ptr<SessionBase> create_server_session() const {
+			ScopedReadAccess r(_sec);
+			return std::make_unique<ServerSession>(_pub, _sec.data());
+		}
+
+		std::string fingerprint() const {
+			return get_fingerprint(_pub.data(), _pub.size());
+		}
+};
+
+class known_hosts_store {
+	private:
+		std::unordered_set<std::string> _known_hosts;
+		File                            _hosts_file;
+
 	public:
-		using basic_io::read;
-		using basic_io::write;
+		Result<void> initialize(const string_type& hosts_path) {
+			_known_hosts.clear();
+			_hosts_file = hosts_path;
 
-		virtual ~sft_base() = default;
-		virtual Result<void> initialize(const string_type& sec_path,
-										const string_type& pub_path,
-										const string_type& hosts_path) = 0;
+			if (_hosts_file.is_exist() && _hosts_file.size() > 0) {
+				if (auto ret = _hosts_file.open(); !ret) {
+					return tl::unexpected(get_error_str(ret.error()));
+				}
+				auto contents_res = _hosts_file.read_all_bytes();
+				if (!contents_res) {
+					return tl::unexpected(get_error_str(contents_res.error()));
+				}
+				auto contents = str_split(contents_res.value().data(), "\n");
+				for (auto content : contents) {
+					auto host = std::string(content.begin(), content.end());
+					if (!host.empty()) {
+						_known_hosts.insert(host);
+					}
+				}
+			}
+			else if (auto ret = _hosts_file.open(true); !ret) {
+				return tl::unexpected(get_error_str(ret.error()));
+			}
 
-		// Yield 0 when the connection is not available
-		IoResult write(const Byte* buf, SizeType nbytes) const override {
-			if (!_conn.available()) {
+			return {};
+		}
+
+		bool contains(const std::string& fingerprint) const {
+			return _known_hosts.contains(fingerprint);
+		}
+
+		bool ensure_trusted(const std::string& fingerprint,
+							std::string_view accepted_message = {}) {
+			if (this->contains(fingerprint)) {
+				return true;
+			}
+
+			fmt::print("Can this key be trusted? {}\ty/N\n", fingerprint);
+			char choice = std::cin.get();
+			while (choice == '\n') {
+				choice = std::cin.get();
+			}
+			std::cin.get();
+			if (choice != 'y' && choice != 'Y') {
+				return false;
+			}
+
+			_known_hosts.insert(fingerprint);
+			if (auto ret = _hosts_file.write(fingerprint + '\n'); !ret) {
+				print_error("Failed to update known_hosts", ret);
+				return false;
+			}
+
+			if (!accepted_message.empty()) {
+				fmt::print("{}\n", accepted_message);
+			}
+			return true;
+		}
+};
+
+class secure_channel : public io_overloads<secure_channel> {
+	private:
+		tcp_socket                   _conn;
+		std::unique_ptr<SessionBase> _session;
+
+	public:
+		using IoResult = Task<ResType>;
+		using io_overloads<secure_channel>::read;
+		using io_overloads<secure_channel>::write;
+
+		void set_session(std::unique_ptr<SessionBase> session) {
+			_session = std::move(session);
+		}
+
+		SessionBase& session() {
+			return *_session;
+		}
+
+		const SessionBase& session() const {
+			return *_session;
+		}
+
+		tcp_socket& socket() {
+			return _conn;
+		}
+
+		const tcp_socket& socket() const {
+			return _conn;
+		}
+
+		void attach_socket(tcp_socket&& socket) {
+			_conn = std::move(socket);
+		}
+
+		IoResult write(const Byte* buf, SizeType nbytes) const {
+			if (!_conn.available() || !_session) {
 				co_return tl::unexpected(ENOTCONN);
 			}
 
@@ -233,7 +307,6 @@ class sft_base : public basic_io<true> {
 				ciphertext = std::move(ret.value());
 			}
 
-			// 加密帧长度以隐藏真实数据大小
 			uint64_t frameSize = ciphertext.size();
 			uint64_t encryptedFrameSize =
 				_session->encrypt_frame_length(frameSize);
@@ -241,7 +314,6 @@ class sft_base : public basic_io<true> {
 		write_again:
 			auto ret = _conn.write((const Byte*)&encryptedFrameSize,
 								   sizeof(encryptedFrameSize));
-
 			if (!ret) {
 				if (ret.error() == WSAEWOULDBLOCK) {
 					goto write_again;
@@ -277,9 +349,8 @@ class sft_base : public basic_io<true> {
 			co_return bytesWritten - lastWritten;
 		}
 
-		// Yield bytes read when the connection is not available
-		IoResult read(Byte* buf, SizeType nbytes) const override {
-			if (!_conn.available()) {
+		IoResult read(Byte* buf, SizeType nbytes) const {
+			if (!_conn.available() || !_session) {
 				co_return tl::unexpected(ENOTCONN);
 			}
 
@@ -302,9 +373,7 @@ class sft_base : public basic_io<true> {
 				headerBytesRead += ret.value();
 			}
 
-			// 解密帧长度
 			frameSize = _session->decrypt_frame_length(encryptedFrameSize);
-
 			if (frameSize > nbytes + EncryptionAdditionalBytes ||
 				frameSize == 0) {
 				co_return tl::unexpected(EMSGSIZE);
@@ -341,12 +410,12 @@ class sft_base : public basic_io<true> {
 			co_return bytesRead - lastRead;
 		}
 
-		void close() override {
+		void close() {
 			_conn.close();
 		}
 
-		bool available() const override {
-			return _conn.available() && _session->is_established();
+		bool available() const {
+			return _conn.available() && _session && _session->is_established();
 		}
 
 		int set_nonblocking() const {
@@ -358,77 +427,107 @@ class sft_base : public basic_io<true> {
 		}
 };
 
-class sft_client : public sft_base {
+class sft_client : public io_overloads<sft_client> {
+	private:
+		sft_identity      _identity;
+		known_hosts_store _known_hosts;
+		secure_channel    _channel;
+
+		void reset_session() {
+			_channel.set_session(_identity.create_client_session());
+		}
+
 	public:
+		using IoResult = secure_channel::IoResult;
+		using io_overloads<sft_client>::read;
+		using io_overloads<sft_client>::write;
+
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
-								const string_type& hosts_path) override {
-			return this->_initialize(sec_path, pub_path, hosts_path, true);
+								const string_type& hosts_path) {
+			if (auto ret = _identity.initialize(sec_path, pub_path); !ret) {
+				return ret;
+			}
+			if (auto ret = _known_hosts.initialize(hosts_path); !ret) {
+				return ret;
+			}
+			this->reset_session();
+			fmt::println("The fingerprint of local public key is {}",
+						 _identity.fingerprint());
+			return {};
+		}
+
+		IoResult read(Byte* buf, SizeType nbytes) const {
+			return _channel.read(buf, nbytes);
+		}
+
+		IoResult write(const Byte* buf, SizeType nbytes) const {
+			return _channel.write(buf, nbytes);
+		}
+
+		void close() {
+			_channel.close();
+		}
+
+		bool available() const {
+			return _channel.available();
+		}
+
+		int set_nonblocking() const {
+			return _channel.set_nonblocking();
+		}
+
+		int set_blocking() const {
+			return _channel.set_blocking();
 		}
 
 		ResType connect(const sockaddr_in& addr) {
-			if (!_conn.available()) {
-				_conn.initialize();
+			this->reset_session();
+			auto& conn = _channel.socket();
+			auto& session = _channel.session();
+			if (!conn.available()) {
+				if (auto ret = conn.initialize(); !ret) {
+					return ret;
+				}
 			}
-			auto ret = _conn.connect(addr);
+			auto ret = conn.connect(addr);
 			if (!ret) {
 				return ret;
 			}
 			auto buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf;
 			randombytes_buf(buf.data(), buf_size);
-			auto hello_msg1 = _session->step1_generate_hello();
+			auto hello_msg1 = session.step1_generate_hello();
 			std::ranges::copy(hello_msg1, buf.begin());
-			_conn.write(buf.data(), buf_size);
-			_conn.read(buf);
-			auto res = _session->step2_handle_response(
+			conn.write(buf.data(), buf_size);
+			conn.read(buf);
+			auto res = session.step2_handle_response(
 				buf, [&](const std::string& fp) {
-					if (!(_known_hosts.contains(fp))) {
-						fmt::print("Can this key be trusted? {}\ty/N\n", fp);
-						char choice = std::cin.get();
-						while (choice == '\n') {
-							choice = std::cin.get();
-						}
-						std::cin.get(); // Drop the '\n'
-						if (choice == 'y' || choice == 'Y') {
-							_known_hosts.insert(fp);
-							_hosts_file.write(fp + '\n');
-							fmt::print("Please check the other side to accept "
-									   "the connection.\n");
-							return true;
-						}
-						else {
-							return false;
-							//_conn.close();
-							// return tl::unexpected(ECANCELED);
-						}
-					}
-					else {
-						return true;
-					}
+					return _known_hosts.ensure_trusted(
+						fp, "Please check the other side to accept the connection.");
 				});
 			if (!res) {
-				_conn.close();
+				conn.close();
 				return tl::unexpected(ECONNABORTED);
 			}
 			std::vector<uint8_t> client_response = std::move(res.value());
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);
 			std::ranges::copy(client_response, buf.begin());
-			_conn.write(buf.data(), buf_size);
-			_conn.read(buf);
+			conn.write(buf.data(), buf_size);
+			conn.read(buf);
 			std::vector<uint8_t> last_ok;
-			if (auto res = _session->decrypt(buf.data(),
-											 1 + EncryptionAdditionalBytes);
-				!res) {
-				_conn.close();
+			if (auto decrypt_res =
+					session.decrypt(buf.data(), 1 + EncryptionAdditionalBytes);
+				!decrypt_res) {
+				conn.close();
 				return tl::unexpected(ECONNREFUSED);
 			}
 			else {
-				last_ok = std::move(res.value());
+				last_ok = std::move(decrypt_res.value());
 			}
 			if (last_ok[0] != 1) {
-				_conn.close();
+				conn.close();
 				return tl::unexpected(ECONNREFUSED);
 			}
 
@@ -452,78 +551,109 @@ class sft_client : public sft_base {
 		}
 };
 
-class sft_server : public sft_base {
+class sft_server : public io_overloads<sft_server> {
+	private:
+		sft_identity      _identity;
+		known_hosts_store _known_hosts;
+		secure_channel    _channel;
+
+		void reset_session() {
+			_channel.set_session(_identity.create_server_session());
+		}
+
 	public:
+		using IoResult = secure_channel::IoResult;
+		using io_overloads<sft_server>::read;
+		using io_overloads<sft_server>::write;
+
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
-								const string_type& hosts_path) override {
-			return this->_initialize(sec_path, pub_path, hosts_path, false);
+								const string_type& hosts_path) {
+			if (auto ret = _identity.initialize(sec_path, pub_path); !ret) {
+				return ret;
+			}
+			if (auto ret = _known_hosts.initialize(hosts_path); !ret) {
+				return ret;
+			}
+			this->reset_session();
+			fmt::println("The fingerprint of local public key is {}",
+						 _identity.fingerprint());
+			return {};
+		}
+
+		IoResult read(Byte* buf, SizeType nbytes) const {
+			return _channel.read(buf, nbytes);
+		}
+
+		IoResult write(const Byte* buf, SizeType nbytes) const {
+			return _channel.write(buf, nbytes);
+		}
+
+		void close() {
+			_channel.close();
+		}
+
+		bool available() const {
+			return _channel.available();
+		}
+
+		int set_nonblocking() const {
+			return _channel.set_nonblocking();
+		}
+
+		int set_blocking() const {
+			return _channel.set_blocking();
 		}
 
 		ResType listen_and_accept(tcp_socket& listner) {
+			this->reset_session();
 			auto accept_res = listner.accept();
 			if (!accept_res) {
 				return tl::unexpected(accept_res.error());
 			}
-			_conn         = std::move(*accept_res);
+			_channel.attach_socket(std::move(*accept_res));
+			auto& conn = _channel.socket();
+			auto& session = _channel.session();
 			auto buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf{};
-			_conn.set_blocking();
-			auto ret = _conn.read(buf);
+			conn.set_blocking();
+			auto ret = conn.read(buf);
 			if (!ret) {
 				return ret;
 			}
-			auto server_response = _session->step1_handle_hello(buf);
+			auto server_response = session.step1_handle_hello(buf);
 			if (!server_response) {
 				return tl::unexpected(EBADMSG);
 			}
 			randombytes_buf(buf.data(), buf_size);
 			std::copy(server_response->begin(), server_response->end(),
 					  buf.begin());
-			ret = _conn.write(buf.data(), buf_size);
+			ret = conn.write(buf.data(), buf_size);
 			if (!ret) {
 				return ret;
 			}
-			ret = _conn.read(buf);
+			ret = conn.read(buf);
 			if (!ret) {
 				return ret;
 			}
-			auto res = _session->step2_handle_auth(
+			auto res = session.step2_handle_auth(
 				buf, [&](const std::string& fp) -> bool {
-					if (!(_known_hosts.contains(fp))) {
-						fmt::print("Can this key be trusted? {}\ty/N\n", fp);
-						char choice = std::cin.get();
-						while (choice == '\n') {
-							choice = std::cin.get();
-						}
-						std::cin.get(); // Drop the '\n'
-						if (choice == 'y' || choice == 'Y') {
-							_known_hosts.insert(fp);
-							_hosts_file.write(fp + '\n');
-							return true;
-						}
-						else {
-							return false;
-						}
-					}
-					else {
-						return true;
-					}
+					return _known_hosts.ensure_trusted(fp);
 				});
 			if (!res) {
-				_conn.close();
+				conn.close();
 				return tl::unexpected(ECONNABORTED);
 			}
 			uint8_t ok     = 1;
-			auto    ok_msg = _session->encrypt(&ok, sizeof(ok));
+			auto    ok_msg = session.encrypt(&ok, sizeof(ok));
 			if (!ok_msg) {
-				_conn.close();
+				conn.close();
 				return tl::unexpected(EBADMSG);
 			}
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);
 			std::copy(ok_msg->begin(), ok_msg->end(), buf.begin());
-			ret = _conn.write(buf.data(), buf_size);
+			ret = conn.write(buf.data(), buf_size);
 			if (!ret) {
 				return ret;
 			}

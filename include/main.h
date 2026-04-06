@@ -49,12 +49,13 @@ ResType wait_for_peers_to_connect(const kotcpp::udp_socket& local_udp_host,
 								  kotcpp::sft_server& receiver, int retry = 15,
 								  bool use_random_port = false);
 
-bool    send_file(kotcpp::sft_base&                                   target,
-				  const vector<tuple<std::unique_ptr<File>, string>>& files);
+template <kotcpp::AsyncTransferTarget Target>
+bool                                               send_file(Target&                                             target,
+															 const vector<tuple<std::unique_ptr<File>, string>>& files);
 
-void    receive_file(kotcpp::sft_base& target);
+template <kotcpp::AsyncTransferTarget Target> void receive_file(Target& target);
 
-Result<sockaddr_in> manual_connect_to_peer();
+Result<sockaddr_in>                                manual_connect_to_peer();
 
 vector<tuple<std::unique_ptr<File>, string>>
 			get_filefd_list(const vector<string>& path_list);
