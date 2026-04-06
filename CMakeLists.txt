@@ -357,7 +357,74 @@ install(TARGETS ${PROJECT_NAME}
 option(BUILD_TESTS "Build tests" OFF)
 if(BUILD_TESTS)
     enable_testing()
-    # 在这里添加测试相关配置
+    add_executable(main_transfer_test tests/main_transfer_test.cpp)
+
+    target_include_directories(main_transfer_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${BSHOSHANY_THREAD_POOL_INCLUDE_DIRS}
+    )
+
+    target_compile_definitions(main_transfer_test PRIVATE
+        VERSION=${PROJECT_VERSION}
+        $<$<CONFIG:Debug>:DEBUG>
+        $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
+    )
+
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(main_transfer_test PRIVATE
+            ${GNULIKE_COMMON_WARNINGS}
+            ${GCC_EXTRA_WARNINGS}
+            $<$<CONFIG:Debug>:${GNULIKE_DEBUG_FLAGS}>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:${GNULIKE_RELEASE_FLAGS}>
+            $<$<BOOL:${ENABLE_PROFILING}>:${GNULIKE_PROFILE_FLAGS}>
+        )
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(main_transfer_test PRIVATE
+            ${GNULIKE_COMMON_WARNINGS}
+            ${CLANG_EXTRA_WARNINGS}
+            $<$<CONFIG:Debug>:${GNULIKE_DEBUG_FLAGS}>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:${GNULIKE_RELEASE_FLAGS}>
+            $<$<BOOL:${ENABLE_PROFILING}>:${GNULIKE_PROFILE_FLAGS}>
+        )
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        target_compile_options(main_transfer_test PRIVATE
+            ${MSVC_WARNING_FLAGS}
+            $<$<CONFIG:Debug>:${MSVC_DEBUG_FLAGS}>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:${MSVC_RELEASE_FLAGS}>
+            $<$<BOOL:${ENABLE_PROFILING}>:${MSVC_PROFILE_FLAGS}>
+        )
+        target_compile_definitions(main_transfer_test PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            $<$<NOT:$<CONFIG:Debug>>:SODIUM_STATIC=1>
+            $<$<NOT:$<CONFIG:Debug>>:SODIUM_EXPORT=>
+        )
+    else()
+        target_compile_options(main_transfer_test PRIVATE
+            -Wall -Wextra
+            $<$<CONFIG:Debug>:-g>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:-O2>
+            $<$<BOOL:${ENABLE_PROFILING}>:-O2 -g -fno-omit-frame-pointer>
+        )
+    endif()
+
+    if(WIN32)
+        target_link_libraries(main_transfer_test PRIVATE ws2_32 winmm)
+    endif()
+
+    target_link_libraries(main_transfer_test PRIVATE
+        unofficial-sodium::sodium
+        fmt::fmt
+    )
+
+    set_target_properties(main_transfer_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_BINARY_DIR}/bin"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/bin"
+    )
+
+    add_test(NAME main_transfer_test COMMAND main_transfer_test)
 endif()
 
 option(BUILD_DOCUMENTATION "Build documentation" OFF)
