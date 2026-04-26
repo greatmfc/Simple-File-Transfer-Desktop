@@ -97,11 +97,14 @@ cmake --build . --config Release -j
 # One-time receive mode
 ./simple-file-transfer -r
 
-# One-time transfer mode with files
-./simple-file-transfer -t file1.txt folder/
-
 # Direct connection to specific host
 ./simple-file-transfer -t file1.txt -a 192.168.1.100:10013
+
+# One-time receive and pull files from target"
+./simple-file-transfer -rp -a 1.2.3.4:1234
+
+# One-time transfer and waiting for clients to pull"
+./simple-file-transfer -tp file1 dir1/
 
 # Show help
 ./simple-file-transfer -h
