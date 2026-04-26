@@ -486,6 +486,128 @@ void test_receive_file_invalid_request(const fs::path& temp_root) {
 			"receive_file should not create files for invalid requests");
 }
 
+void test_file_random_access_helpers(const fs::path& temp_root) {
+	const fs::path path = temp_root / "random_access.bin";
+	write_bytes_to_file(path, to_bytes("0123456789"));
+
+	kotcpp::File file(path);
+	require(file.open_random_access(false, kotcpp::File::iomode::RDWR)
+				.has_value(),
+			"failed to open file for random access");
+
+	const auto patch = to_bytes("XYZ");
+	auto       write_res =
+		file.write_at(patch.data(), static_cast<kotcpp::SizeType>(patch.size()),
+					  4);
+	require(write_res && write_res.value() == 3,
+			"write_at should write the full patch at the requested offset");
+
+	std::array<Byte, 3> read_buf{};
+	auto read_res =
+		file.read_at(read_buf.data(), static_cast<kotcpp::SizeType>(read_buf.size()),
+					 4);
+	require(read_res && read_res.value() == 3,
+			"read_at should read from the requested offset");
+	require(std::vector<Byte>(read_buf.begin(), read_buf.end()) == patch,
+			"read_at returned unexpected bytes");
+
+	require(read_file_bytes(path) == to_bytes("0123XYZ789"),
+			"write_at should not append when using random-access open");
+
+	require(file.resize(6).has_value(), "resize helper failed");
+	file.close();
+	require(read_file_bytes(path) == to_bytes("0123XY"),
+			"resize helper did not truncate the file");
+}
+
+void test_file_permission_helpers(const fs::path& temp_root) {
+	const fs::path path = temp_root / "permissions.txt";
+	write_bytes_to_file(path, to_bytes("mode"));
+
+	kotcpp::File file(path);
+	require(file.set_permissions(static_cast<fs::perms>(0640)).has_value(),
+			"set_permissions helper failed");
+	auto perms = file.get_permissions();
+	require(perms.has_value(), "get_permissions helper failed");
+#ifdef __unix__
+	require(sft_detail::format_permissions(*perms) == "0640",
+			"permission formatting should preserve POSIX permission bits");
+#endif
+
+	auto parsed = sft_detail::parse_permissions("0755");
+	require(parsed.has_value(), "parse_permissions should accept octal modes");
+	require(sft_detail::format_permissions(*parsed) == "0755",
+			"parse_permissions returned an unexpected mode");
+	require(!sft_detail::parse_permissions("8888").has_value(),
+			"parse_permissions should reject invalid octal modes");
+}
+
+void test_transfer_encoding_helpers() {
+	const std::string input = "nested/path with spaces.bin";
+	const auto        encoded = sft_detail::base64url_encode(input);
+	require(encoded.find('/') == std::string::npos,
+			"base64url encoding should not contain path separators");
+
+	auto decoded = sft_detail::base64url_decode(encoded);
+	require(decoded.has_value(), "base64url_decode rejected a valid value");
+	require(std::string(decoded->begin(), decoded->end()) == input,
+			"base64url round trip changed the input");
+	require(!sft_detail::base64url_decode("not valid?").has_value(),
+			"base64url_decode should reject malformed input");
+
+	const auto hash_a = sft_detail::generic_hash_base64url("same");
+	const auto hash_b = sft_detail::generic_hash_base64url("same");
+	const auto hash_c = sft_detail::generic_hash_base64url("different");
+	require(hash_a == hash_b, "hash helper should be deterministic");
+	require(hash_a != hash_c, "hash helper should distinguish different inputs");
+}
+
+void test_resume_state_helpers(const fs::path& temp_root) {
+	sft_detail::transfer_resume_identity identity{
+		.path        = "folder\\resume.bin",
+		.size        = 12345,
+		.permissions = static_cast<fs::perms>(0644),
+		.extra       = "mtime=42",
+	};
+	sft_detail::transfer_resume_identity other_identity = identity;
+	other_identity.size                                 = 54321;
+
+	const auto filename = sft_detail::build_resume_state_filename(identity);
+	require(filename.starts_with("sft12-") &&
+			 filename.ends_with(".state"),
+			"resume state filename should use the expected wrapper");
+	require(filename.find('/') == std::string::npos &&
+			 filename.find('\\') == std::string::npos,
+			"resume state filename should be safe for a single path component");
+	require(filename != sft_detail::build_resume_state_filename(other_identity),
+			"resume state filename should change when identity fields change");
+
+	const fs::path state_path = temp_root / filename;
+	auto           empty_state = sft_detail::load_resume_state(state_path);
+	require(empty_state.has_value() && !empty_state->has_value(),
+			"missing resume state should load as empty");
+
+	require(sft_detail::store_resume_state(state_path, 4096).has_value(),
+			"store_resume_state failed");
+	auto loaded = sft_detail::load_resume_state(state_path);
+	require(loaded.has_value() && loaded->has_value() &&
+			 (*loaded)->received_bytes == 4096,
+			"load_resume_state returned an unexpected byte count");
+
+	require(sft_detail::sanitize_resume_offset(4096, 8192) == 4096,
+			"valid resume offset should be preserved");
+	require(sft_detail::sanitize_resume_offset(9000, 8192) == 0,
+			"oversized resume offset should be reset");
+	require(sft_detail::sanitize_resume_offset(-1, 8192) == 0,
+			"negative resume offset should be reset");
+
+	require(sft_detail::remove_resume_state(state_path).has_value(),
+			"remove_resume_state failed");
+	auto removed_state = sft_detail::load_resume_state(state_path);
+	require(removed_state.has_value() && !removed_state->has_value(),
+			"removed resume state should load as empty");
+}
+
 } // namespace
 
 int main() {
@@ -516,6 +638,10 @@ int main() {
 		test_receive_file_nested_backslash_path(temp_root);
 		test_receive_file_rejects_parent_traversal(temp_root);
 		test_receive_file_invalid_request(temp_root);
+		test_file_random_access_helpers(temp_root);
+		test_file_permission_helpers(temp_root);
+		test_transfer_encoding_helpers();
+		test_resume_state_helpers(temp_root);
 		fs::remove_all(temp_root);
 		std::cout << "main_transfer_test passed\n";
 		return 0;

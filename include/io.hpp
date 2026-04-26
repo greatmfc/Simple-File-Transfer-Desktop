@@ -4,6 +4,7 @@
 #include "util.hpp"
 #include "ErrorResult.h"
 #include "coroutine.hpp"
+#include <algorithm>
 #include <concepts>
 #include <cstring> // For memset, memcpy
 #include <utility>
@@ -94,7 +95,19 @@ class File : public io_overloads<File> {
 			this->close();
 			this->_fd        = other._fd;
 			this->_file_path = std::move(other._file_path);
-			other._fd        = INVALID_HANDLE_VALUE;
+			this->_iomode    = other._iomode;
+#ifdef _WIN32
+			this->_hMapping = other._hMapping;
+			this->_pData    = other._pData;
+			other._hMapping = nullptr;
+			other._pData    = nullptr;
+#else
+			this->_mmap_ptr = other._mmap_ptr;
+			this->_mmap_len = other._mmap_len;
+			other._mmap_ptr = nullptr;
+			other._mmap_len = 0;
+#endif
+			other._fd = INVALID_HANDLE_VALUE;
 		}
 		~File() {
 			this->close();
@@ -107,7 +120,7 @@ class File : public io_overloads<File> {
 		}
 
 		ResType open(const string_type& path, bool trunc = false,
-					 int rwmode = RDWR) {
+					 int rwmode = RDWR, bool append_when_not_trunc = true) {
 			if (_fd == INVALID_HANDLE_VALUE) {
 				_iomode = rwmode;
 #ifdef _WIN32
@@ -148,7 +161,7 @@ class File : public io_overloads<File> {
 				if (trunc) {
 					flag |= O_TRUNC;
 				}
-				else if (rwmode != RDONLY) {
+				else if (append_when_not_trunc && rwmode != RDONLY) {
 					flag |= O_APPEND;
 				}
 				_fd = ::open(path.c_str(), flag, 0644);
@@ -166,6 +179,9 @@ class File : public io_overloads<File> {
 		ResType open_read_only() {
 			return this->open(_file_path.string(), false, RDONLY);
 		}
+		ResType open_random_access(bool trunc = false, int rwmode = RDWR) {
+			return this->open(_file_path.string(), trunc, rwmode, false);
+		}
 
 		bool is_exist() const {
 			return exists(_file_path);
@@ -182,6 +198,27 @@ class File : public io_overloads<File> {
 		auto get_last_modified_time() const {
 			return last_write_time(_file_path);
 		}
+		const fs::path& path() const {
+			return _file_path;
+		}
+		Result<fs::perms> get_permissions() const {
+			std::error_code ec;
+			const auto      status = fs::status(_file_path, ec);
+			if (ec) {
+				return tl::unexpected(ec.message());
+			}
+			return status.permissions();
+		}
+		ResType set_permissions(
+			fs::perms        permissions,
+			fs::perm_options options = fs::perm_options::replace) const {
+			std::error_code ec;
+			fs::permissions(_file_path, permissions, options, ec);
+			if (ec) {
+				return tl::unexpected(ec.value());
+			}
+			return 0;
+		}
 		void unmap_file() {
 #ifdef _WIN32
 			if (_pData) {
@@ -193,14 +230,23 @@ class File : public io_overloads<File> {
 			_pData    = nullptr;
 			_hMapping = nullptr;
 #else
-			if (_mmap_ptr == nullptr) {
+			if (_mmap_ptr != nullptr) {
 				munmap(_mmap_ptr, _mmap_len);
 				_mmap_ptr = nullptr;
+				_mmap_len = 0;
 			}
 #endif
 		}
 		std::uintmax_t size() const {
 			return file_size(_file_path);
+		}
+		ResType resize(std::uintmax_t new_size) const {
+			std::error_code ec;
+			fs::resize_file(_file_path, new_size, ec);
+			if (ec) {
+				return tl::unexpected(ec.value());
+			}
+			return 0;
 		}
 		void close() {
 			if (_fd != INVALID_HANDLE_VALUE) {
@@ -284,6 +330,25 @@ class File : public io_overloads<File> {
 		HANDLE get_fd() const {
 			return _fd;
 		}
+		ResType seek(SizeType offset) const {
+			if (offset < 0) {
+				return tl::unexpected(EINVAL);
+			}
+#ifdef _WIN32
+			LARGE_INTEGER distance{};
+			distance.QuadPart = static_cast<LONGLONG>(offset);
+			if (!SetFilePointerEx(_fd, distance, nullptr, FILE_BEGIN)) {
+				return tl::unexpected((int)GetLastError());
+			}
+			return offset;
+#else
+			auto ret = ::lseek(_fd, static_cast<off_t>(offset), SEEK_SET);
+			if (ret == static_cast<off_t>(-1)) {
+				return tl::unexpected((int)GetLastError());
+			}
+			return static_cast<RetType>(ret);
+#endif
+		}
 		ResType read(Byte* buf, SizeType nbytes) const {
 #ifdef _WIN32
 			// Windows DWORD is 32-bit, max ~4GB per call. Use chunks for large
@@ -316,6 +381,38 @@ class File : public io_overloads<File> {
 			else {
 				return tl::unexpected((int)GetLastError());
 			}
+#endif
+		}
+		ResType read_at(Byte* buf, SizeType nbytes, SizeType offset) const {
+			if (offset < 0) {
+				return tl::unexpected(EINVAL);
+			}
+#ifdef _WIN32
+			if (auto seek_res = seek(offset); !seek_res) {
+				return seek_res;
+			}
+			return read(buf, nbytes);
+#else
+			constexpr SizeType MAX_CHUNK  = 0x7FFFFFFF;
+			SizeType           total_read = 0;
+			while (nbytes > 0) {
+				const auto chunk_size = std::min(nbytes, MAX_CHUNK);
+				auto ret = ::pread(_fd, buf, static_cast<size_t>(chunk_size),
+								   offset + total_read);
+				if (ret == -1) {
+					return tl::unexpected((int)GetLastError());
+				}
+				if (ret == 0) {
+					break;
+				}
+				total_read += ret;
+				buf += ret;
+				nbytes -= ret;
+				if (ret < chunk_size) {
+					break;
+				}
+			}
+			return total_read;
 #endif
 		}
 		// Return success when ret>=0, otherwise unexpected
@@ -351,6 +448,39 @@ class File : public io_overloads<File> {
 			else {
 				return tl::unexpected((int)GetLastError());
 			}
+#endif
+		}
+		ResType write_at(const Byte* buf, SizeType nbytes,
+						 SizeType offset) const {
+			if (offset < 0) {
+				return tl::unexpected(EINVAL);
+			}
+#ifdef _WIN32
+			if (auto seek_res = seek(offset); !seek_res) {
+				return seek_res;
+			}
+			return write(buf, nbytes);
+#else
+			constexpr SizeType MAX_CHUNK     = 0x7FFFFFFF;
+			SizeType           total_written = 0;
+			while (nbytes > 0) {
+				const auto chunk_size = std::min(nbytes, MAX_CHUNK);
+				auto ret = ::pwrite(_fd, buf, static_cast<size_t>(chunk_size),
+									offset + total_written);
+				if (ret == -1) {
+					return tl::unexpected((int)GetLastError());
+				}
+				if (ret == 0) {
+					break;
+				}
+				total_written += ret;
+				buf += ret;
+				nbytes -= ret;
+				if (ret < chunk_size) {
+					break;
+				}
+			}
+			return total_written;
 #endif
 		}
 
