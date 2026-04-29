@@ -17,7 +17,7 @@ struct NameIP {
 		std::string name;
 		std::string ip;
 };
-extern tl::expected<std::vector<std::string>, std::string>
+extern kotcpp::Result<std::vector<std::string>>
 						   OpenFileOrFolderDialog(bool openFolder = false);
 extern bool                ConfigureFirewall();
 extern std::vector<NameIP> GetIPv4BroadcastAddresses();

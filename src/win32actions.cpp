@@ -10,6 +10,7 @@
 #include <netfw.h>
 #include <shellapi.h>
 #include <tl/expected.hpp>
+#include "ErrorResult.h"
 
 #pragma comment(lib, "Ole32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -20,6 +21,7 @@
 
 using tl::expected;
 using tl::unexpected;
+using kotcpp::Result;
 
 struct NameIP {
 		std::string name;
@@ -90,8 +92,7 @@ std::string get_winsock_error_str(int errcode = 0) {
 	return std::format("{} {}", message, ecode);
 }
 
-expected<std::vector<std::string>, std::string>
-OpenFileOrFolderDialog(bool openFolder = false) {
+Result<std::vector<std::string>> OpenFileOrFolderDialog(bool openFolder = false) {
 	std::vector<std::string> selectedFiles;
 	std::string              errorMessage;
 

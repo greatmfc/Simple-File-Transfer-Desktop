@@ -26,18 +26,18 @@ Result<sockaddr_in> handle_discovery_failure() {
 	if (!(std::cin >> choice)) {
 		std::cin.clear();
 		std::cin.ignore(10000, '\n');
-		return tl::unexpected<string>(kotcpp::get_error_str(EINVAL));
+		return tl::unexpected(kotcpp::make_os_error(EINVAL));
 	}
 
 	if (choice == 0) {
-		return tl::unexpected<string>(
-			kotcpp::get_error_str(EAGAIN)); // 表示需要重新搜索
+		return tl::unexpected(
+			kotcpp::make_os_error(EAGAIN)); // 表示需要重新搜索
 	}
 	else if (choice == 1) {
 		return manual_connect_to_peer();
 	}
 	else {
-		return tl::unexpected<string>(kotcpp::get_error_str(ECANCELED));
+		return tl::unexpected(kotcpp::make_os_error(ECANCELED));
 	}
 }
 
@@ -60,7 +60,7 @@ Result<sockaddr_in> parse_address(const std::string& addr_str,
 	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
 	if (inet_pton(AF_INET, ip.c_str(), &addr.sin_addr) != 1) {
-		return tl::unexpected<string>(kotcpp::get_error_str(EINVAL));
+		return tl::unexpected(kotcpp::make_os_error(EINVAL));
 	}
 	addr.sin_port = htons(port);
 	return addr;

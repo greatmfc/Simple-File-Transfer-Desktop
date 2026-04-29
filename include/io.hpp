@@ -13,6 +13,10 @@ namespace fs = std::filesystem;
 
 namespace kotcpp {
 
+inline Error filesystem_error(const std::error_code& ec) {
+	return make_os_error(ec.value(), ec.message());
+}
+
 template <class Derived> class io_overloads {
 	public:
 		auto read(vector<Byte>& buf, SizeType pos, SizeType sz) const {
@@ -167,7 +171,7 @@ class File : public io_overloads<File> {
 				_fd = ::open(path.c_str(), flag, 0644);
 #endif
 				if (_fd == INVALID_HANDLE_VALUE) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				_file_path = path;
 			}
@@ -205,7 +209,7 @@ class File : public io_overloads<File> {
 			std::error_code ec;
 			const auto      status = fs::status(_file_path, ec);
 			if (ec) {
-				return tl::unexpected(ec.message());
+				return tl::unexpected(filesystem_error(ec));
 			}
 			return status.permissions();
 		}
@@ -215,7 +219,7 @@ class File : public io_overloads<File> {
 			std::error_code ec;
 			fs::permissions(_file_path, permissions, options, ec);
 			if (ec) {
-				return tl::unexpected(ec.value());
+				return tl::unexpected(filesystem_error(ec));
 			}
 			return 0;
 		}
@@ -244,7 +248,7 @@ class File : public io_overloads<File> {
 			std::error_code ec;
 			fs::resize_file(_file_path, new_size, ec);
 			if (ec) {
-				return tl::unexpected(ec.value());
+				return tl::unexpected(filesystem_error(ec));
 			}
 			return 0;
 		}
@@ -259,7 +263,7 @@ class File : public io_overloads<File> {
 			}
 			this->unmap_file();
 		}
-		expected<std::vector<char>, int> read_all_bytes() {
+		Result<std::vector<char>> read_all_bytes() {
 			std::vector<char> res(this->size());
 			auto              ret = this->read(res);
 			if (!ret) {
@@ -276,7 +280,7 @@ class File : public io_overloads<File> {
 		fs::path::string_type get_type() const {
 			return _file_path.extension().native();
 		}
-		expected<uint8_t*, int> map_file_in_memory() {
+		Result<uint8_t*> map_file_in_memory() {
 			DWORD mmode = 0, pmmode = 0;
 #ifdef _WIN32
 			if (_iomode == iomode::RDONLY) {
@@ -291,14 +295,14 @@ class File : public io_overloads<File> {
 				_hMapping =
 					CreateFileMappingA(_fd, nullptr, mmode, 0, 0, nullptr);
 				if (_hMapping == nullptr) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 			}
 			if (_pData == nullptr) {
 				_pData = MapViewOfFile(_hMapping, pmmode, 0, 0, 0);
 				if (_pData == nullptr) {
 					CloseHandle(_hMapping);
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 			}
 			return (uint8_t*)_pData;
@@ -313,10 +317,10 @@ class File : public io_overloads<File> {
 			}
 			if (_mmap_ptr == nullptr) {
 				_mmap_len = this->size();
-				_mmap_ptr =
-					(uint8_t*)mmap(nullptr, _mmap_len, mmode, pmmode, _fd, 0);
+				_mmap_ptr = static_cast<uint8_t*>(
+					mmap(nullptr, _mmap_len, mmode, pmmode, _fd, 0));
 				if (_mmap_ptr == nullptr) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				madvise(_mmap_ptr, _mmap_len, MADV_SEQUENTIAL);
 			}
@@ -332,24 +336,27 @@ class File : public io_overloads<File> {
 		}
 		ResType seek(SizeType offset) const {
 			if (offset < 0) {
-				return tl::unexpected(EINVAL);
+				return tl::unexpected(make_os_error(EINVAL));
 			}
 #ifdef _WIN32
 			LARGE_INTEGER distance{};
 			distance.QuadPart = static_cast<LONGLONG>(offset);
 			if (!SetFilePointerEx(_fd, distance, nullptr, FILE_BEGIN)) {
-				return tl::unexpected((int)GetLastError());
+				return tl::unexpected(last_error());
 			}
 			return offset;
 #else
 			auto ret = ::lseek(_fd, static_cast<off_t>(offset), SEEK_SET);
 			if (ret == static_cast<off_t>(-1)) {
-				return tl::unexpected((int)GetLastError());
+				return tl::unexpected(last_error());
 			}
 			return static_cast<RetType>(ret);
 #endif
 		}
 		ResType read(Byte* buf, SizeType nbytes) const {
+			if (nbytes <= 0) {
+				return tl::unexpected(make_os_error(EINVAL));
+			}
 #ifdef _WIN32
 			// Windows DWORD is 32-bit, max ~4GB per call. Use chunks for large
 			// reads.
@@ -360,7 +367,7 @@ class File : public io_overloads<File> {
 					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				DWORD bytes_read = 0;
 				if (!ReadFile(_fd, buf, chunk_size, &bytes_read, nullptr)) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				if (bytes_read == 0) {
 					break; // EOF
@@ -379,19 +386,50 @@ class File : public io_overloads<File> {
 				return ret;
 			}
 			else {
-				return tl::unexpected((int)GetLastError());
+				return tl::unexpected(last_error());
 			}
 #endif
 		}
+
+		// Reads from an absolute byte offset without changing this file's
+		// current read/write position. Returns the number of bytes read, which
+		// may be smaller than nbytes at EOF.
 		ResType read_at(Byte* buf, SizeType nbytes, SizeType offset) const {
-			if (offset < 0) {
-				return tl::unexpected(EINVAL);
+			if (nbytes <= 0 || offset < 0) {
+				return tl::unexpected(make_os_error(EINVAL));
 			}
 #ifdef _WIN32
-			if (auto seek_res = seek(offset); !seek_res) {
-				return seek_res;
+			constexpr DWORD MAX_CHUNK  = 0x7FFFFFFF;
+			SizeType        total_read = 0;
+			while (nbytes > 0) {
+				DWORD chunk_size =
+					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
+				DWORD      bytes_read = 0;
+				OVERLAPPED overlapped{};
+				const auto absolute_offset = offset + total_read;
+				overlapped.Offset          = static_cast<DWORD>(
+                    static_cast<uint64_t>(absolute_offset) & 0xFFFFFFFFu);
+				overlapped.OffsetHigh = static_cast<DWORD>(
+					static_cast<uint64_t>(absolute_offset) >> 32u);
+
+				if (!ReadFile(_fd, buf, chunk_size, &bytes_read, &overlapped)) {
+					const auto err = GetLastError();
+					if (err == ERROR_HANDLE_EOF) {
+						break;
+					}
+					return tl::unexpected(make_os_error(err));
+				}
+				if (bytes_read == 0) {
+					break;
+				}
+				total_read += bytes_read;
+				buf += bytes_read;
+				nbytes -= bytes_read;
+				if (bytes_read < chunk_size) {
+					break;
+				}
 			}
-			return read(buf, nbytes);
+			return total_read;
 #else
 			constexpr SizeType MAX_CHUNK  = 0x7FFFFFFF;
 			SizeType           total_read = 0;
@@ -400,7 +438,7 @@ class File : public io_overloads<File> {
 				auto ret = ::pread(_fd, buf, static_cast<size_t>(chunk_size),
 								   offset + total_read);
 				if (ret == -1) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				if (ret == 0) {
 					break;
@@ -415,8 +453,12 @@ class File : public io_overloads<File> {
 			return total_read;
 #endif
 		}
+
 		// Return success when ret>=0, otherwise unexpected
 		ResType write(const Byte* buf, SizeType nbytes) const {
+			if (nbytes <= 0) {
+				return tl::unexpected(make_os_error(EINVAL));
+			}
 #ifdef _WIN32
 			// Windows DWORD is 32-bit, max ~4GB per call. Use chunks for large
 			// writes.
@@ -427,7 +469,7 @@ class File : public io_overloads<File> {
 					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				DWORD bytes_written = 0;
 				if (!WriteFile(_fd, buf, chunk_size, &bytes_written, nullptr)) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				if (bytes_written == 0) {
 					break; // Disk full or other issue
@@ -446,20 +488,48 @@ class File : public io_overloads<File> {
 				return ret;
 			}
 			else {
-				return tl::unexpected((int)GetLastError());
+				return tl::unexpected(last_error());
 			}
 #endif
 		}
+
+		// Writes to an absolute byte offset without changing this file's
+		// current read/write position. Returns the number of bytes written;
+		// callers that require all bytes to be written should loop until done.
 		ResType write_at(const Byte* buf, SizeType nbytes,
 						 SizeType offset) const {
-			if (offset < 0) {
-				return tl::unexpected(EINVAL);
+			if (nbytes <= 0 || offset < 0) {
+				return tl::unexpected(make_os_error(EINVAL));
 			}
 #ifdef _WIN32
-			if (auto seek_res = seek(offset); !seek_res) {
-				return seek_res;
+			constexpr DWORD MAX_CHUNK     = 0x7FFFFFFF;
+			SizeType        total_written = 0;
+			while (nbytes > 0) {
+				DWORD chunk_size =
+					static_cast<DWORD>((std::min<SizeType>)(nbytes, MAX_CHUNK));
+				DWORD      bytes_written = 0;
+				OVERLAPPED overlapped{};
+				const auto absolute_offset = offset + total_written;
+				overlapped.Offset          = static_cast<DWORD>(
+                    static_cast<uint64_t>(absolute_offset) & 0xFFFFFFFFu);
+				overlapped.OffsetHigh = static_cast<DWORD>(
+					static_cast<uint64_t>(absolute_offset) >> 32u);
+
+				if (!WriteFile(_fd, buf, chunk_size, &bytes_written,
+							   &overlapped)) {
+					return tl::unexpected(last_error());
+				}
+				if (bytes_written == 0) {
+					break;
+				}
+				total_written += bytes_written;
+				buf += bytes_written;
+				nbytes -= bytes_written;
+				if (bytes_written < chunk_size) {
+					break;
+				}
 			}
-			return write(buf, nbytes);
+			return total_written;
 #else
 			constexpr SizeType MAX_CHUNK     = 0x7FFFFFFF;
 			SizeType           total_written = 0;
@@ -468,7 +538,7 @@ class File : public io_overloads<File> {
 				auto ret = ::pwrite(_fd, buf, static_cast<size_t>(chunk_size),
 									offset + total_written);
 				if (ret == -1) {
-					return tl::unexpected((int)GetLastError());
+					return tl::unexpected(last_error());
 				}
 				if (ret == 0) {
 					break;
@@ -489,7 +559,6 @@ class File : public io_overloads<File> {
 		int      _iomode = 0;
 		// For mmap
 #ifdef _WIN32
-		// For mmap
 		HANDLE _hMapping = nullptr;
 		LPVOID _pData    = nullptr;
 #else
@@ -525,15 +594,17 @@ class raw_socket : public io_overloads<raw_socket> {
 				_ip_port.sin_family = AF_INET;
 				_fd                 = ::socket(domain, type, protocol);
 				if (_fd == INVALID_SOCKET) {
+					capture_socket_error();
 					RETERROR;
 				}
 			}
 			return 0;
 		}
 		ResType bind() {
-			auto ret =
-				::bind(_fd, (const sockaddr*)&_ip_port, sizeof(_ip_port));
+			auto ret = ::bind(_fd, reinterpret_cast<const sockaddr*>(&_ip_port),
+							  sizeof(_ip_port));
 			if (ret == -1) {
+				capture_socket_error();
 				RETERROR;
 			}
 			return 0;
@@ -550,11 +621,10 @@ class raw_socket : public io_overloads<raw_socket> {
 			auto ret = inet_pton(AF_INET, hostname.data(), &_ip_port.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return tl::unexpected(EINVAL);
+					return tl::unexpected(make_os_error(EINVAL));
 				}
-				else {
-					return tl::unexpected((int)GetLastError());
-				}
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 			_ip_port.sin_port = htons(port);
 			return this->bind();
@@ -563,6 +633,7 @@ class raw_socket : public io_overloads<raw_socket> {
 						   socklen_t len) {
 			auto ret = ::setsockopt(_fd, level, option, val, len);
 			if (ret == -1) {
+				capture_socket_error();
 				RETERROR;
 			}
 			return 0;
@@ -640,9 +711,11 @@ class raw_socket : public io_overloads<raw_socket> {
 			while (nbytes > 0) {
 				int chunk_size =
 					static_cast<int>((std::min<SizeType>)(nbytes, MAX_CHUNK));
-				auto ret = ::recv(_fd, (char*)buf, chunk_size, 0);
+				auto ret =
+					::recv(_fd, reinterpret_cast<char*>(buf), chunk_size, 0);
 				if (ret < 0) {
-					return tl::unexpected((int)GetLastError());
+					capture_socket_error();
+					return tl::unexpected(last_error());
 				}
 				if (ret == 0) {
 					break; // Connection closed
@@ -666,7 +739,8 @@ class raw_socket : public io_overloads<raw_socket> {
 					static_cast<int>((std::min<SizeType>)(nbytes, MAX_CHUNK));
 				auto ret = ::send(_fd, (const char*)buf, chunk_size, 0);
 				if (ret < 0) {
-					return tl::unexpected((int)GetLastError());
+					capture_socket_error();
+					return tl::unexpected(last_error());
 				}
 				if (ret == 0) {
 					break; // Connection issue
@@ -702,11 +776,10 @@ class tcp_socket : public raw_socket {
 			auto ret        = inet_pton(AF_INET, ip.data(), &addr.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return tl::unexpected(EINVAL);
+					return tl::unexpected(make_os_error(EINVAL));
 				}
-				else {
-					return tl::unexpected((int)GetLastError());
-				}
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 			addr.sin_port = htons(port);
 			return this->connect(addr);
@@ -719,7 +792,8 @@ class tcp_socket : public raw_socket {
 			_ip_port = addr;
 			if (::connect(_fd, (struct sockaddr*)&_ip_port, sizeof(_ip_port)) <
 				0) {
-				return tl::unexpected((int)GetLastError());
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 			return 0;
 		}
@@ -733,25 +807,30 @@ class tcp_socket : public raw_socket {
 			}
 			_ip_port.sin_addr.s_addr = INADDR_ANY;
 			_ip_port.sin_port        = htons(port);
-			setsockopt(SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+			ret = setsockopt(SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+			if (!ret) {
+				return ret;
+			}
 			ret = this->bind();
 			if (!ret) {
 				return ret;
 				// return SOCKET_ERROR;
 			}
 			if (::listen(_fd, n) < 0) {
-				return tl::unexpected((int)GetLastError());
+				capture_socket_error();
+				return tl::unexpected(last_error());
 				// return SOCKET_ERROR;
 			}
 			return 0;
 		}
-		expected<tcp_socket, int> accept() const {
+		Result<tcp_socket> accept() const {
 			sockaddr_in addrs{};
 			socklen_t   len = sizeof addrs;
 			memset(&addrs, 0, len);
 			auto ret = ::accept(_fd, (sockaddr*)&addrs, &len);
 			if (ret == INVALID_SOCKET) {
-				return tl::unexpected((int)GetLastError());
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 			return tcp_socket(ret, addrs);
 		}
@@ -779,9 +858,15 @@ class udp_socket : public raw_socket {
 			}
 			_ip_port.sin_addr.s_addr = INADDR_ANY;
 			_ip_port.sin_port        = htons(port);
-			setsockopt(SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+			ret = setsockopt(SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+			if (!ret) {
+				return ret;
+			}
 #ifdef SO_BROADCAST
-			setsockopt(SOL_SOCKET, SO_BROADCAST, &flag, sizeof(flag));
+			ret = setsockopt(SOL_SOCKET, SO_BROADCAST, &flag, sizeof(flag));
+			if (!ret) {
+				return ret;
+			}
 #endif
 			ret = this->bind();
 			if (!ret) {
@@ -799,18 +884,18 @@ class udp_socket : public raw_socket {
 			auto ret = inet_pton(AF_INET, ip.data(), &target_udp_addr.sin_addr);
 			if (ret <= 0) {
 				if (ret == 0) {
-					return tl::unexpected(EINVAL);
+					return tl::unexpected(make_os_error(EINVAL));
 				}
-				else {
-					return tl::unexpected((int)GetLastError());
-				}
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 
 			ret = ::sendto(_fd, message.data(), message.size(), 0,
 						   (const struct sockaddr*)&target_udp_addr,
 						   sizeof(struct sockaddr));
 			if (ret < 0) {
-				return tl::unexpected((int)GetLastError());
+				capture_socket_error();
+				return tl::unexpected(last_error());
 			}
 			return ret;
 		}

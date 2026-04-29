@@ -15,8 +15,6 @@
 #undef min
 #endif
 #define _SC_HOST_NAME_MAX 180
-#undef errno
-#define errno GetLastError()
 #pragma comment(lib, "mswsock.lib")
 extern std::wstring convert_string_to_wstring(const char* str);
 extern std::string  convert_wstring_to_string(const wchar_t* wstr);
@@ -31,8 +29,6 @@ extern std::string  convert_wstring_to_string(const wchar_t* wstr);
 #include <fcntl.h>
 #include <cstdio>
 #define WAIT_TIMEOUT                    ETIMEDOUT
-#define SetLastError(n)                 errno = n
-#define GetLastError()                  errno
 #define convert_string_to_wstring(str)  str
 #define convert_wstring_to_string(wstr) wstr
 using optval_t = int;
@@ -71,7 +67,7 @@ ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 
 	iRet = gethostname(host_name_str, _SC_HOST_NAME_MAX);
 	if (iRet == -1) {
-		return tl::unexpected(GetLastError());
+		return tl::unexpected(last_error());
 	}
 	auto str =
 		sh.form_discover_header(host_name_str, htons(local_host.get_port()));
@@ -92,9 +88,11 @@ ResType search_for_sft_peers(const udp_socket& local_host, int retry,
 		iRet = recvfrom(local_host.get_fd(), recv_buf, sizeof(recv_buf) - 1, 0,
 						(struct sockaddr*)&respond_addr, &len);
 		if (iRet == -1) {
-			if (errno != WSAEWOULDBLOCK) {
+			capture_socket_error();
+			auto error = last_error();
+			if (error != WSAEWOULDBLOCK) {
 				local_host.set_blocking();
-				return tl::unexpected(GetLastError());
+				return tl::unexpected(error);
 			}
 			cout << ".";
 			cout.flush();
@@ -222,8 +220,10 @@ ResType wait_for_peers_to_connect(const udp_socket& local_udp_host,
 	assert(iRet < 1024);
 #endif
 	[[unlikely]] if (iRet == SOCKET_ERROR) {
-		print_error("select failed");
-		goto bad;
+		capture_socket_error();
+		auto error = last_error();
+		print_error("select failed", error);
+		return tl::unexpected(error);
 	}
 	[[unlikely]] if (FD_ISSET(tcpfd, &rfds)) { goto Accept; }
 
@@ -231,13 +231,16 @@ ResType wait_for_peers_to_connect(const udp_socket& local_udp_host,
 	iRet = recvfrom(udpfd, recv_buf.data(), sizeof(recv_buf) - 1, 0,
 					(sockaddr*)&responded_addr, &len);
 	if (iRet == -1) {
-		print_error("recvfrom fail");
-		goto bad;
+		capture_socket_error();
+		auto error = last_error();
+		print_error("recvfrom fail", error);
+		return tl::unexpected(error);
 	}
 	[[unlikely]] if (inet_ntop(AF_INET, &responded_addr.sin_addr, ip_str,
 							   INET_ADDRSTRLEN) == nullptr) {
-		print_error("trans fail!");
-		goto bad;
+		auto error = last_error();
+		print_error("trans fail!", error);
+		return tl::unexpected(error);
 	}
 #ifdef DEBUG
 	cout << format("Receive msg: {}\nFrom: {}", recv_buf.data(), ip_str)
@@ -245,8 +248,9 @@ ResType wait_for_peers_to_connect(const udp_socket& local_udp_host,
 #endif // DEBUG
 	iRet = gethostname(host, _SC_HOST_NAME_MAX);
 	[[unlikely]] if (iRet == -1) {
-		print_error("gethostname fail");
-		goto bad;
+		auto error = last_error();
+		print_error("gethostname fail", error);
+		return tl::unexpected(error);
 	}
 	str = sh.form_respond_header(host, htons(listener.get_port()));
 	msg = recv_buf.data();
@@ -256,8 +260,10 @@ ResType wait_for_peers_to_connect(const udp_socket& local_udp_host,
 	iRet = sendto(udpfd, str.c_str(), str.size(), 0,
 				  (const sockaddr*)&responded_addr, sizeof(sockaddr));
 	if (-1 == iRet) {
-		print_error("send error");
-		goto bad;
+		capture_socket_error();
+		auto error = last_error();
+		print_error("send error", error);
+		return tl::unexpected(error);
 	}
 
 Accept:
@@ -267,7 +273,7 @@ Accept:
 		if (!ret) {
 			if (ret.error() != WSAEWOULDBLOCK) {
 				print_error("accept error", ret);
-				goto bad;
+				return tl::unexpected(ret.error());
 			}
 			std::this_thread::sleep_for(1s);
 			continue;
@@ -277,9 +283,7 @@ Accept:
 	}
 	cerr << "Accept timeout, please try again." << endl;
 	listener.set_blocking();
-	SetLastError(WAIT_TIMEOUT);
-bad:
-	return tl::unexpected(GetLastError());
+	return tl::unexpected(make_os_error(WAIT_TIMEOUT));
 }
 
 // Connect to peer manually.

@@ -134,15 +134,13 @@ inline kotcpp::Result<std::filesystem::path> get_resume_state_directory() {
 	std::error_code ec;
 	auto            temp_root = std::filesystem::temp_directory_path(ec);
 	if (ec) {
-		return tl::unexpected(
-			std::format("Fail to get temporary directory: {}", ec.message()));
+		return tl::unexpected(kotcpp::filesystem_error(ec));
 	}
 
 	auto state_dir = temp_root / "sft-resume";
 	std::filesystem::create_directories(state_dir, ec);
 	if (ec) {
-		return tl::unexpected(std::format(
-			"Fail to create resume state directory: {}", ec.message()));
+		return tl::unexpected(kotcpp::filesystem_error(ec));
 	}
 	return state_dir;
 }
@@ -169,8 +167,7 @@ load_resume_state(const std::filesystem::path& state_path) {
 	std::error_code ec;
 	if (!std::filesystem::exists(state_path, ec)) {
 		if (ec) {
-			return tl::unexpected(std::format(
-				"Fail to inspect resume state file: {}", ec.message()));
+			return tl::unexpected(kotcpp::filesystem_error(ec));
 		}
 		return std::nullopt;
 	}
@@ -201,11 +198,10 @@ inline kotcpp::Result<void>
 store_resume_state(const std::filesystem::path& state_path,
 				   kotcpp::SizeType             received_bytes) {
 	std::error_code ec;
-	if (state_path.has_parent_path()) {
+	if (!state_path.has_parent_path()) {
 		std::filesystem::create_directories(state_path.parent_path(), ec);
 		if (ec) {
-			return tl::unexpected(std::format(
-				"Fail to create resume state directory: {}", ec.message()));
+			return tl::unexpected(kotcpp::filesystem_error(ec));
 		}
 	}
 
@@ -225,8 +221,7 @@ remove_resume_state(const std::filesystem::path& state_path) {
 	std::error_code ec;
 	std::filesystem::remove(state_path, ec);
 	if (ec) {
-		return tl::unexpected(
-			std::format("Fail to remove resume state file: {}", ec.message()));
+		return tl::unexpected(kotcpp::filesystem_error(ec));
 	}
 	return {};
 }
