@@ -5,17 +5,46 @@
 #include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
+#include <string_view>
+#include <unordered_map>
 #include <sodium.h>
+
+#ifndef SFT_PROTOCOL_ENUM_DEFINED
+#define SFT_PROTOCOL_ENUM_DEFINED
+enum class SftProtocol {
+	V11,
+	V12
+};
+#endif
 
 namespace sft_detail {
 
 inline constexpr kotcpp::SizeType transfer_chunk_size = 4'194'304;
+inline constexpr std::string_view sft12_version       = "sft1.2";
+inline constexpr std::string_view sft12_type          = "FIL";
 
 struct transfer_request_entry {
 		std::string      path;
 		kotcpp::SizeType size         = 0;
 		bool             is_directory = false;
+};
+
+struct transfer_request_entry_v12 {
+		size_t                 id = 0;
+		std::string            path;
+		kotcpp::SizeType       size         = 0;
+		bool                   is_directory = false;
+		std::filesystem::perms permissions  = std::filesystem::perms::unknown;
+};
+
+struct send_entry_v12 {
+		std::filesystem::path  local_path;
+		std::string            remote_path;
+		kotcpp::SizeType       size         = 0;
+		bool                   is_directory = false;
+		std::filesystem::perms permissions  = std::filesystem::perms::unknown;
 };
 
 struct transfer_resume_identity {
@@ -29,12 +58,38 @@ struct transfer_resume_state {
 		kotcpp::SizeType received_bytes = 0;
 };
 
+enum class frame_action {
+	Req,
+	Ack,
+	Rej,
+	Fin,
+	Ok,
+	Done,
+	Err,
+	Unknown
+};
+
+struct sft12_frame {
+		frame_action                  action = frame_action::Unknown;
+		std::string                   action_text;
+		std::vector<std::string_view> fields;
+		std::unordered_map<std::string, std::string> options;
+};
+
 inline bool is_path_separator(char c) {
 	return c == '/' || c == '\\';
 }
 
 inline bool is_directory_marker(std::string_view path) {
 	return !path.empty() && is_path_separator(path.back());
+}
+
+inline void normalize_remote_path_separators(std::string& path) {
+	for (auto& c : path) {
+		if (c == '/') {
+			c = '\\';
+		}
+	}
 }
 
 inline unsigned permissions_to_mode(std::filesystem::perms permissions) {
@@ -52,7 +107,8 @@ parse_permissions(std::string_view value) {
 		std::from_chars(value.data(), value.data() + value.size(), mode, 8);
 	if (ec != std::errc{} || ptr != value.data() + value.size() ||
 		mode > 07777u) {
-		return tl::unexpected("Receive malformed file permissions.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed file permissions."));
 	}
 	return static_cast<std::filesystem::perms>(mode);
 }
@@ -82,7 +138,8 @@ base64url_decode(std::string_view value) {
 		sodium_base642bin(output.data(), output.size(), value.data(),
 						  value.size(), nullptr, &output_size, &end, variant);
 	if (ret != 0 || end != value.data() + value.size()) {
-		return tl::unexpected("Receive malformed base64url value.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed base64url value."));
 	}
 	output.resize(output_size);
 	return output;
@@ -174,14 +231,16 @@ load_resume_state(const std::filesystem::path& state_path) {
 
 	std::ifstream input(state_path, std::ios::binary);
 	if (!input.is_open()) {
-		return tl::unexpected("Fail to open resume state file.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Fail to open resume state file."));
 	}
 
 	std::string line;
 	std::getline(input, line);
 	constexpr std::string_view prefix = "sft1.2/FIL/STATE/";
 	if (!line.starts_with(prefix)) {
-		return tl::unexpected("Receive malformed resume state file.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed resume state file."));
 	}
 
 	const auto       number = std::string_view(line).substr(prefix.size());
@@ -189,7 +248,8 @@ load_resume_state(const std::filesystem::path& state_path) {
 	auto [ptr, parse_ec]            = std::from_chars(
         number.data(), number.data() + number.size(), received_bytes);
 	if (parse_ec != std::errc{} || ptr != number.data() + number.size()) {
-		return tl::unexpected("Receive malformed resume byte count.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed resume byte count."));
 	}
 	return transfer_resume_state{received_bytes};
 }
@@ -198,7 +258,7 @@ inline kotcpp::Result<void>
 store_resume_state(const std::filesystem::path& state_path,
 				   kotcpp::SizeType             received_bytes) {
 	std::error_code ec;
-	if (!state_path.has_parent_path()) {
+	if (state_path.has_parent_path()) {
 		std::filesystem::create_directories(state_path.parent_path(), ec);
 		if (ec) {
 			return tl::unexpected(kotcpp::filesystem_error(ec));
@@ -207,11 +267,13 @@ store_resume_state(const std::filesystem::path& state_path,
 
 	std::ofstream output(state_path, std::ios::binary | std::ios::trunc);
 	if (!output.is_open()) {
-		return tl::unexpected("Fail to open resume state file for writing.");
+		return tl::unexpected(kotcpp::make_sft_error(
+			"Fail to open resume state file for writing."));
 	}
 	output << "sft1.2/FIL/STATE/" << received_bytes << '\n';
 	if (!output.good()) {
-		return tl::unexpected("Fail to write resume state file.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Fail to write resume state file."));
 	}
 	return {};
 }
@@ -239,24 +301,423 @@ inline std::string build_file_request(
 	return request;
 }
 
+inline std::filesystem::perms
+get_path_permissions_or_unknown(const std::filesystem::path& path) {
+	std::error_code ec;
+	const auto      status = std::filesystem::status(path, ec);
+	if (ec) {
+		return std::filesystem::perms::unknown;
+	}
+	return status.permissions();
+}
+
+inline kotcpp::Result<kotcpp::SizeType>
+get_file_size_as_size_type(const std::filesystem::path& path) {
+	std::error_code ec;
+	const auto      raw_size = std::filesystem::file_size(path, ec);
+	if (ec) {
+		return tl::unexpected(kotcpp::filesystem_error(ec));
+	}
+	if (raw_size > static_cast<std::uintmax_t>(
+					   std::numeric_limits<kotcpp::SizeType>::max())) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("File is too large to transfer."));
+	}
+	return static_cast<kotcpp::SizeType>(raw_size);
+}
+
+inline void
+append_sft12_directory_entry(std::vector<send_entry_v12>& entries,
+							 const std::filesystem::path& local_path,
+							 std::string                  remote_path) {
+	normalize_remote_path_separators(remote_path);
+	if (!is_directory_marker(remote_path)) {
+		remote_path += '\\';
+	}
+	entries.push_back({local_path, remote_path, 0, true,
+					   get_path_permissions_or_unknown(local_path)});
+}
+
+inline void append_sft12_file_entry(std::vector<send_entry_v12>& entries,
+									const std::filesystem::path& local_path,
+									std::string                  remote_path) {
+	auto size = get_file_size_as_size_type(local_path);
+	if (!size) {
+		kotcpp::print_error(
+			std::format("Cannot read file size: {}", local_path.string()),
+			size);
+		return;
+	}
+
+	normalize_remote_path_separators(remote_path);
+	entries.push_back({local_path, remote_path, *size, false,
+					   get_path_permissions_or_unknown(local_path)});
+}
+
+inline std::vector<send_entry_v12>
+build_sft12_send_entries(const std::vector<std::string>& path_list) {
+	std::vector<send_entry_v12> entries;
+	for (const auto& path_string : path_list) {
+		const std::filesystem::path path(
+			is_directory_marker(path_string)
+				? path_string.substr(0, path_string.size() - 1)
+				: path_string);
+		std::error_code ec;
+		const auto      status = std::filesystem::status(path, ec);
+		if (ec) {
+			kotcpp::print_error(
+				std::format("Cannot inspect path: {}", path.string()),
+				kotcpp::Result<void>(
+					tl::unexpected(kotcpp::filesystem_error(ec))));
+			continue;
+		}
+
+		if (std::filesystem::is_directory(status)) {
+			auto folder_name = path.filename().string();
+			if (folder_name.empty()) {
+				folder_name = path.lexically_normal().filename().string();
+			}
+			if (folder_name.empty()) {
+				std::cerr << "Cannot derive folder name for: " << path << '\n';
+				continue;
+			}
+			folder_name += '\\';
+			append_sft12_directory_entry(entries, path, folder_name);
+
+			std::filesystem::recursive_directory_iterator iter(path, ec);
+			if (ec) {
+				kotcpp::print_error(
+					std::format("Cannot scan directory: {}", path.string()),
+					kotcpp::Result<void>(
+						tl::unexpected(kotcpp::filesystem_error(ec))));
+				continue;
+			}
+			const std::filesystem::recursive_directory_iterator end;
+			for (; iter != end; iter.increment(ec)) {
+				if (ec) {
+					kotcpp::print_error(
+						std::format("Cannot scan directory: {}", path.string()),
+						kotcpp::Result<void>(
+							tl::unexpected(kotcpp::filesystem_error(ec))));
+					break;
+				}
+
+				const auto& entry = *iter;
+				if (entry.is_regular_file(ec)) {
+					if (ec) {
+						kotcpp::print_error(
+							std::format("Cannot inspect path: {}",
+										entry.path().string()),
+							kotcpp::Result<void>(
+								tl::unexpected(kotcpp::filesystem_error(ec))));
+						ec.clear();
+						continue;
+					}
+					auto relative =
+						std::filesystem::relative(entry.path(), path, ec);
+					if (ec) {
+						kotcpp::print_error(
+							std::format("Cannot compute relative path: {}",
+										entry.path().string()),
+							kotcpp::Result<void>(
+								tl::unexpected(kotcpp::filesystem_error(ec))));
+						ec.clear();
+						continue;
+					}
+					append_sft12_file_entry(entries, entry.path(),
+											folder_name + relative.string());
+				}
+				else if (entry.is_directory(ec)) {
+					if (ec) {
+						kotcpp::print_error(
+							std::format("Cannot inspect path: {}",
+										entry.path().string()),
+							kotcpp::Result<void>(
+								tl::unexpected(kotcpp::filesystem_error(ec))));
+						ec.clear();
+						continue;
+					}
+					auto relative =
+						std::filesystem::relative(entry.path(), path, ec);
+					if (ec) {
+						kotcpp::print_error(
+							std::format("Cannot compute relative path: {}",
+										entry.path().string()),
+							kotcpp::Result<void>(
+								tl::unexpected(kotcpp::filesystem_error(ec))));
+						ec.clear();
+						continue;
+					}
+					append_sft12_directory_entry(
+						entries, entry.path(), folder_name + relative.string());
+				}
+			}
+		}
+		else if (std::filesystem::is_regular_file(status)) {
+			append_sft12_file_entry(entries, path, path.filename().string());
+		}
+		else {
+			std::cerr << std::format("The target file: {} is neither a "
+									 "regular file nor a directory. Ignored.\n",
+									 path.string());
+		}
+	}
+	return entries;
+}
+
+inline std::string action_to_string(frame_action action) {
+	switch (action) {
+	case frame_action::Req:
+		return "REQ";
+	case frame_action::Ack:
+		return "ACK";
+	case frame_action::Rej:
+		return "REJ";
+	case frame_action::Fin:
+		return "FIN";
+	case frame_action::Ok:
+		return "OK";
+	case frame_action::Done:
+		return "DONE";
+	case frame_action::Err:
+		return "ERR";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+inline frame_action parse_action(std::string_view action) {
+	if (action == "REQ") {
+		return frame_action::Req;
+	}
+	if (action == "ACK") {
+		return frame_action::Ack;
+	}
+	if (action == "REJ") {
+		return frame_action::Rej;
+	}
+	if (action == "FIN") {
+		return frame_action::Fin;
+	}
+	if (action == "OK") {
+		return frame_action::Ok;
+	}
+	if (action == "DONE") {
+		return frame_action::Done;
+	}
+	if (action == "ERR") {
+		return frame_action::Err;
+	}
+	return frame_action::Unknown;
+}
+
+inline bool is_sft12_frame(std::string_view frame) {
+	const auto fields = kotcpp::str_split(frame, "/");
+	return fields.size() >= 3 && fields[0] == sft12_version &&
+		   fields[1] == sft12_type;
+}
+
+inline kotcpp::Result<size_t> parse_size_t(std::string_view value,
+										   std::string_view context) {
+	size_t parsed = 0;
+	auto [ptr, ec] =
+		std::from_chars(value.data(), value.data() + value.size(), parsed);
+	if (ec != std::errc{} || ptr != value.data() + value.size()) {
+		return tl::unexpected(kotcpp::make_sft_error(
+			std::format("Receive malformed {}.", context)));
+	}
+	return parsed;
+}
+
+inline kotcpp::Result<kotcpp::SizeType>
+parse_size_type(std::string_view value, std::string_view context) {
+	kotcpp::SizeType parsed = 0;
+	auto [ptr, ec] =
+		std::from_chars(value.data(), value.data() + value.size(), parsed);
+	if (ec != std::errc{} || ptr != value.data() + value.size() || parsed < 0) {
+		return tl::unexpected(kotcpp::make_sft_error(
+			std::format("Receive malformed {}.", context)));
+	}
+	return parsed;
+}
+
+inline std::string get_option(const sft12_frame& frame, std::string_view key,
+							  std::string_view default_value = {}) {
+	auto found = frame.options.find(std::string(key));
+	if (found == frame.options.end()) {
+		return std::string(default_value);
+	}
+	return found->second;
+}
+
+inline kotcpp::Result<kotcpp::SizeType>
+get_size_option(const sft12_frame& frame, std::string_view key) {
+	auto found = frame.options.find(std::string(key));
+	if (found == frame.options.end()) {
+		return tl::unexpected(kotcpp::make_sft_error(
+			std::format("Receive missing {} option.", key)));
+	}
+	return parse_size_type(found->second, key);
+}
+
+inline kotcpp::Result<sft12_frame> parse_sft12_frame(std::string_view frame) {
+	const auto fields = kotcpp::str_split(frame, "/");
+	if (fields.size() < 3) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed sft1.2 frame."));
+	}
+	if (fields[0] != sft12_version || fields[1] != sft12_type) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive unsupported sft1.2 frame."));
+	}
+
+	sft12_frame parsed;
+	parsed.action      = parse_action(fields[2]);
+	parsed.action_text = std::string(fields[2]);
+	if (parsed.action == frame_action::Unknown) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive unknown sft1.2 frame action."));
+	}
+
+	for (size_t i = 3; i < fields.size(); ++i) {
+		if (const auto eq = fields[i].find('='); eq != std::string_view::npos) {
+			parsed.options.emplace(std::string(fields[i].substr(0, eq)),
+								   std::string(fields[i].substr(eq + 1)));
+		}
+		else {
+			parsed.fields.push_back(fields[i]);
+		}
+	}
+	return parsed;
+}
+
+inline kotcpp::Result<std::string>
+decode_base64url_string(std::string_view value, std::string_view /*context*/) {
+	auto decoded = base64url_decode(value);
+	if (!decoded) {
+		return tl::unexpected(decoded.error());
+	}
+	return std::string(decoded->begin(), decoded->end());
+}
+
+inline std::string build_sft12_req(size_t id, const std::string& path,
+								   kotcpp::SizeType size, bool is_directory,
+								   std::filesystem::perms permissions) {
+	std::string frame = std::format("sft1.2/FIL/REQ/{}/{}/{}/type={}", id,
+									base64url_encode(path), size,
+									is_directory ? "dir" : "file");
+	if (permissions != std::filesystem::perms::unknown) {
+		frame += "/mode=";
+		frame += format_permissions(permissions);
+	}
+	return frame;
+}
+
+inline std::string build_sft12_ack(size_t id, kotcpp::SizeType offset,
+								   kotcpp::SizeType length) {
+	return std::format("sft1.2/FIL/ACK/{}/offset={}/length={}", id, offset,
+					   length);
+}
+
+inline std::string build_sft12_rej(size_t id, std::string_view reason) {
+	return std::format("sft1.2/FIL/REJ/{}/reason={}", id,
+					   base64url_encode(reason));
+}
+
+inline std::string build_sft12_fin(size_t id, kotcpp::SizeType sent) {
+	return std::format("sft1.2/FIL/FIN/{}/sent={}", id, sent);
+}
+
+inline std::string build_sft12_ok(size_t id) {
+	return std::format("sft1.2/FIL/OK/{}", id);
+}
+
+inline std::string build_sft12_done(size_t count) {
+	return std::format("sft1.2/FIL/DONE/count={}", count);
+}
+
+inline std::string build_sft12_ok_all() {
+	return "sft1.2/FIL/OK/all";
+}
+
+inline std::string build_sft12_err(size_t id, std::string_view reason) {
+	return std::format("sft1.2/FIL/ERR/{}/reason={}", id,
+					   base64url_encode(reason));
+}
+
+inline kotcpp::Result<transfer_request_entry_v12>
+parse_sft12_req(const sft12_frame& frame) {
+	if (frame.action != frame_action::Req || frame.fields.size() < 3) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed sft1.2 REQ frame."));
+	}
+
+	auto id = parse_size_t(frame.fields[0], "file id");
+	if (!id) {
+		return tl::unexpected(id.error());
+	}
+	auto path = decode_base64url_string(frame.fields[1], "path");
+	if (!path) {
+		return tl::unexpected(path.error());
+	}
+	auto size = parse_size_type(frame.fields[2], "file size");
+	if (!size) {
+		return tl::unexpected(size.error());
+	}
+
+	const auto type = get_option(frame, "type", "file");
+	if (type != "file" && type != "dir") {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive unsupported sft1.2 entry type."));
+	}
+
+	std::filesystem::perms permissions = std::filesystem::perms::unknown;
+	if (auto found = frame.options.find("mode"); found != frame.options.end()) {
+		auto parsed_permissions = parse_permissions(found->second);
+		if (!parsed_permissions) {
+			return tl::unexpected(parsed_permissions.error());
+		}
+		permissions = *parsed_permissions;
+	}
+
+	return transfer_request_entry_v12{.id           = *id,
+									  .path         = *path,
+									  .size         = *size,
+									  .is_directory = type == "dir",
+									  .permissions  = permissions};
+}
+
+inline kotcpp::Result<size_t> parse_sft12_id_field(const sft12_frame& frame,
+												   std::string_view   context) {
+	if (frame.fields.empty()) {
+		return tl::unexpected(kotcpp::make_sft_error(
+			std::format("Receive missing {} id.", context)));
+	}
+	return parse_size_t(frame.fields[0], context);
+}
+
 inline kotcpp::Result<std::vector<transfer_request_entry>>
 parse_file_request(std::string_view request) {
 	const auto fields = kotcpp::str_split(request, "/");
 	if (fields.size() < 2) {
-		return tl::unexpected("Receive unknown request.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive unknown request."));
 	}
 	if (fields[SFT_VER] != "sft1.1" || fields[SFT_TYPE] != "FIL") {
-		return tl::unexpected("Receive unsupported request header.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive unsupported request header."));
 	}
 	if (((fields.size() - 2) % 2) != 0) {
-		return tl::unexpected("Receive malformed file request.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed file request."));
 	}
 
 	std::vector<transfer_request_entry> entries;
 	entries.reserve((fields.size() - 2) / 2);
 	for (size_t i = SFT_FIL_NAME_START; i + 1 < fields.size(); i += 2) {
 		if (fields[i].empty()) {
-			return tl::unexpected("Receive malformed file path in request.");
+			return tl::unexpected(kotcpp::make_sft_error(
+				"Receive malformed file path in request."));
 		}
 
 		kotcpp::SizeType file_size = 0;
@@ -265,7 +726,8 @@ parse_file_request(std::string_view request) {
             file_size);
 		if (ec != std::errc{} ||
 			ptr != fields[i + 1].data() + fields[i + 1].size()) {
-			return tl::unexpected("Receive malformed file size in request.");
+			return tl::unexpected(kotcpp::make_sft_error(
+				"Receive malformed file size in request."));
 		}
 
 		entries.push_back({std::string(fields[i]), file_size,
@@ -351,6 +813,33 @@ inline bool read_file_exact(kotcpp::File& file, Byte* buffer,
 	return true;
 }
 
+inline bool read_file_at_exact(kotcpp::File& file, Byte* buffer,
+							   kotcpp::SizeType bytes_to_read,
+							   kotcpp::SizeType offset,
+							   std::string_view file_path) {
+	kotcpp::SizeType bytes_read = 0;
+	while (bytes_read < bytes_to_read) {
+		auto read_res =
+			file.read_at(buffer + bytes_read, bytes_to_read - bytes_read,
+						 offset + bytes_read);
+		if (!read_res) {
+			kotcpp::print_error(std::format("Fail to read file: {}", file_path),
+								read_res);
+			return false;
+		}
+
+		const auto step = static_cast<kotcpp::SizeType>(read_res.value());
+		if (step == 0) {
+			std::cerr << std::format("Unexpected EOF while reading file: {}\n",
+									 file_path);
+			return false;
+		}
+		bytes_read += step;
+	}
+
+	return true;
+}
+
 inline bool write_file_exact(kotcpp::File& file, const Byte* buffer,
 							 kotcpp::SizeType bytes_to_write,
 							 std::string_view file_path) {
@@ -358,6 +847,35 @@ inline bool write_file_exact(kotcpp::File& file, const Byte* buffer,
 	while (bytes_written < bytes_to_write) {
 		auto write_res =
 			file.write(buffer + bytes_written, bytes_to_write - bytes_written);
+		if (!write_res) {
+			kotcpp::print_error(
+				std::format("Error while trying to write to local: {}",
+							file_path),
+				write_res);
+			return false;
+		}
+
+		const auto step = static_cast<kotcpp::SizeType>(write_res.value());
+		if (step == 0) {
+			std::cerr << std::format(
+				"Short write while writing local file: {}\n", file_path);
+			return false;
+		}
+		bytes_written += step;
+	}
+
+	return true;
+}
+
+inline bool write_file_at_exact(kotcpp::File& file, const Byte* buffer,
+								kotcpp::SizeType bytes_to_write,
+								kotcpp::SizeType offset,
+								std::string_view file_path) {
+	kotcpp::SizeType bytes_written = 0;
+	while (bytes_written < bytes_to_write) {
+		auto write_res = file.write_at(buffer + bytes_written,
+									   bytes_to_write - bytes_written,
+									   offset + bytes_written);
 		if (!write_res) {
 			kotcpp::print_error(
 				std::format("Error while trying to write to local: {}",
@@ -394,6 +912,31 @@ bool write_exact_to_target(Target& target, const Byte* buffer,
 }
 
 template <kotcpp::AsyncTransferTarget Target>
+kotcpp::Result<std::string> read_control_frame(Target& target) {
+	auto buffer = std::vector<Byte>(transfer_chunk_size);
+	auto task   = target.read(buffer);
+	auto res    = wait_for_completion(task);
+	if (!res) {
+		return tl::unexpected(res.error());
+	}
+	if (res.value() <= 0 ||
+		res.value() > static_cast<kotcpp::SizeType>(buffer.size())) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive invalid control frame length."));
+	}
+	return std::string(reinterpret_cast<const char*>(buffer.data()),
+					   static_cast<size_t>(res.value()));
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+bool write_control_frame(Target& target, std::string_view frame) {
+	return write_exact_to_target(target,
+								 reinterpret_cast<const Byte*>(frame.data()),
+								 static_cast<kotcpp::SizeType>(frame.size()),
+								 "Fail to send control frame");
+}
+
+template <kotcpp::AsyncTransferTarget Target>
 bool stream_file_to_target(Target& target, kotcpp::File& file,
 						   std::string_view   file_path,
 						   std::vector<Byte>& scratch) {
@@ -425,6 +968,59 @@ bool stream_file_to_target(Target& target, kotcpp::File& file,
 	return true;
 }
 
+inline std::filesystem::perms
+get_file_permissions_or_unknown(const std::unique_ptr<kotcpp::File>& file) {
+	if (file == nullptr) {
+		return std::filesystem::perms::unknown;
+	}
+	auto permissions = file->get_permissions();
+	if (!permissions) {
+		return std::filesystem::perms::unknown;
+	}
+	return *permissions;
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+bool stream_file_range_to_target(Target& target, kotcpp::File& file,
+								 std::string_view   file_path,
+								 kotcpp::SizeType   offset,
+								 kotcpp::SizeType   length,
+								 std::vector<Byte>& scratch) {
+	const auto file_size = static_cast<kotcpp::SizeType>(file.size());
+	if (offset < 0 || length < 0 || offset > file_size ||
+		length > file_size - offset) {
+		std::cerr << "Receive invalid file range request.\n";
+		return false;
+	}
+
+	const auto scratch_size     = static_cast<kotcpp::SizeType>(scratch.size());
+	kotcpp::SizeType bytes_sent = 0;
+	kotcpp::progress_bar_with_speed(offset, file_size, true);
+
+	while (bytes_sent < length) {
+		const auto chunk_size = std::min(scratch_size, length - bytes_sent);
+		if (!read_file_at_exact(file, scratch.data(), chunk_size,
+								offset + bytes_sent, file_path)) {
+			return false;
+		}
+
+		auto write_task = target.write(scratch.data(), chunk_size);
+		if (!finish_exact_transfer(
+				write_task, chunk_size, file_size, bytes_sent,
+				std::format("Fail to send file: {}", file_path),
+				[offset](kotcpp::SizeType current, kotcpp::SizeType total) {
+					kotcpp::progress_bar_with_speed(offset + current, total);
+				})) {
+			return false;
+		}
+	}
+
+	if (length == 0) {
+		kotcpp::progress_bar_with_speed(file_size, file_size, true);
+	}
+	return true;
+}
+
 template <kotcpp::AsyncTransferTarget Target>
 bool drain_target_bytes(Target& target, kotcpp::SizeType bytes_to_drain,
 						std::vector<Byte>& scratch, std::string_view context) {
@@ -440,6 +1036,56 @@ bool drain_target_bytes(Target& target, kotcpp::SizeType bytes_to_drain,
 				[](kotcpp::SizeType, kotcpp::SizeType) {})) {
 			return false;
 		}
+	}
+	return true;
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
+								 std::string_view             file_path,
+								 kotcpp::SizeType             offset,
+								 kotcpp::SizeType             length,
+								 kotcpp::SizeType             total_size,
+								 std::vector<Byte>&           scratch,
+								 const std::filesystem::path& state_path) {
+	if (offset < 0 || length < 0 || total_size < 0 || offset > total_size ||
+		length > total_size - offset) {
+		std::cerr << "Receive invalid file range.\n";
+		return false;
+	}
+
+	const auto scratch_size = static_cast<kotcpp::SizeType>(scratch.size());
+	kotcpp::SizeType bytes_received = 0;
+	kotcpp::progress_bar_with_speed(offset, total_size, true);
+
+	while (bytes_received < length) {
+		const auto chunk_size = std::min(scratch_size, length - bytes_received);
+		auto       read_task  = target.read(scratch.data(), chunk_size);
+		const auto chunk_offset = offset + bytes_received;
+		if (!finish_exact_transfer(
+				read_task, chunk_size, total_size, bytes_received,
+				std::format("Error while trying to receive from peer: {}",
+							file_path),
+				[offset](kotcpp::SizeType current, kotcpp::SizeType total) {
+					kotcpp::progress_bar_with_speed(offset + current, total);
+				})) {
+			return false;
+		}
+
+		if (!write_file_at_exact(output_file, scratch.data(), chunk_size,
+								 chunk_offset, file_path)) {
+			return false;
+		}
+		if (auto state_res =
+				store_resume_state(state_path, offset + bytes_received);
+			!state_res) {
+			kotcpp::print_error("Fail to update resume state", state_res);
+			return false;
+		}
+	}
+
+	if (length == 0) {
+		kotcpp::progress_bar_with_speed(total_size, total_size, true);
 	}
 	return true;
 }
@@ -509,7 +1155,8 @@ inline kotcpp::Result<std::filesystem::path>
 resolve_output_path(const std::filesystem::path& output_root,
 					std::string_view             remote_path) {
 	if (remote_path.empty()) {
-		return tl::unexpected("Receive empty file path in request.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive empty file path in request."));
 	}
 
 	std::string normalized_path(remote_path);
@@ -524,15 +1171,18 @@ resolve_output_path(const std::filesystem::path& output_root,
 	std::filesystem::path relative_path(normalized_path);
 	relative_path = relative_path.lexically_normal();
 	if (relative_path.empty()) {
-		return tl::unexpected("Receive invalid file path in request.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive invalid file path in request."));
 	}
 	if (relative_path.is_absolute() || relative_path.has_root_name() ||
 		relative_path.has_root_directory()) {
-		return tl::unexpected("Reject absolute path from peer.");
+		return tl::unexpected(
+			kotcpp::make_sft_error("Reject absolute path from peer."));
 	}
 	for (const auto& component : relative_path) {
 		if (component == "..") {
-			return tl::unexpected("Reject parent path traversal from peer.");
+			return tl::unexpected(kotcpp::make_sft_error(
+				"Reject parent path traversal from peer."));
 		}
 	}
 
@@ -542,7 +1192,7 @@ resolve_output_path(const std::filesystem::path& output_root,
 } // namespace sft_detail
 
 template <kotcpp::AsyncTransferTarget Target>
-bool send_file(
+bool send_file_v11(
 	Target& target,
 	const std::vector<std::tuple<std::unique_ptr<kotcpp::File>, std::string>>&
 		files) {
@@ -586,35 +1236,9 @@ bool send_file(
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file(Target& target) {
-	auto request_buffer = std::vector<Byte>(sft_detail::transfer_chunk_size);
-	auto scratch        = std::vector<Byte>(sft_detail::transfer_chunk_size);
-
-	target.set_blocking();
-	auto request_task = target.read(request_buffer);
-	auto request_res  = sft_detail::wait_for_completion(request_task);
-	if (!request_res) {
-		kotcpp::print_error("Fail to receive request", request_res);
-		return;
-	}
-
-	const auto request_size =
-		static_cast<kotcpp::SizeType>(request_res.value());
-	const auto request_buffer_size =
-		static_cast<kotcpp::SizeType>(request_buffer.size());
-	if (request_size == 0 || request_size > request_buffer_size) {
-		std::cerr << "Receive invalid request length.\n";
-		return;
-	}
-
-	const auto request =
-		std::string_view(reinterpret_cast<const char*>(request_buffer.data()),
-						 static_cast<size_t>(request_size));
-#ifdef DEBUG
-	std::cout << "Receive request: " << request << std::endl;
-#endif
-
-	auto entries = sft_detail::parse_file_request(request);
+void receive_file_v11(Target& target, std::string_view first_request,
+					  std::vector<Byte>& scratch) {
+	auto entries = sft_detail::parse_file_request(first_request);
 	if (!entries) {
 		kotcpp::print_error("Fail to parse transfer request", entries);
 		return;
@@ -694,5 +1318,460 @@ void receive_file(Target& target) {
 
 	if (!sft_detail::send_control_code(target, '0')) {
 		return;
+	}
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+void receive_file_v11(Target& target) {
+	auto scratch        = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	auto request_buffer = std::vector<Byte>(sft_detail::transfer_chunk_size);
+
+	target.set_blocking();
+	auto request_task = target.read(request_buffer);
+	auto request_res  = sft_detail::wait_for_completion(request_task);
+	if (!request_res) {
+		kotcpp::print_error("Fail to receive request", request_res);
+		return;
+	}
+
+	const auto request_size =
+		static_cast<kotcpp::SizeType>(request_res.value());
+	const auto request_buffer_size =
+		static_cast<kotcpp::SizeType>(request_buffer.size());
+	if (request_size == 0 || request_size > request_buffer_size) {
+		std::cerr << "Receive invalid request length.\n";
+		return;
+	}
+
+	const auto request =
+		std::string_view(reinterpret_cast<const char*>(request_buffer.data()),
+						 static_cast<size_t>(request_size));
+#ifdef DEBUG
+	std::cout << "Receive request: " << request << std::endl;
+#endif
+
+	receive_file_v11(target, request, scratch);
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+bool send_file_v12(Target& target, const std::vector<std::string>& files) {
+	auto entries = sft_detail::build_sft12_send_entries(files);
+	if (entries.empty()) {
+		std::cerr << "No valid files to send.\n";
+		return false;
+	}
+
+	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	target.set_blocking();
+
+	size_t file_id = 0;
+	for (const auto& entry : entries) {
+		const auto req =
+			sft_detail::build_sft12_req(file_id, entry.remote_path, entry.size,
+										entry.is_directory, entry.permissions);
+		if (!sft_detail::write_control_frame(target, req)) {
+			return false;
+		}
+
+		auto response_text = sft_detail::read_control_frame(target);
+		if (!response_text) {
+			kotcpp::print_error("Fail to receive sft1.2 response",
+								response_text);
+			return false;
+		}
+		auto response = sft_detail::parse_sft12_frame(*response_text);
+		if (!response) {
+			kotcpp::print_error("Fail to parse sft1.2 response", response);
+			return false;
+		}
+
+		if (response->action == sft_detail::frame_action::Rej) {
+			std::cerr << "Peer rejected file: " << entry.remote_path << '\n';
+			++file_id;
+			continue;
+		}
+		if (response->action != sft_detail::frame_action::Ack) {
+			std::cerr << "Receive unexpected sft1.2 response from peer.\n";
+			return false;
+		}
+
+		auto ack_id = sft_detail::parse_sft12_id_field(*response, "ACK");
+		if (!ack_id || *ack_id != file_id) {
+			std::cerr << "Receive mismatched sft1.2 ACK from peer.\n";
+			return false;
+		}
+		auto offset = sft_detail::get_size_option(*response, "offset");
+		auto length = sft_detail::get_size_option(*response, "length");
+		if (!offset || !length) {
+			kotcpp::print_error("Fail to parse sft1.2 ACK",
+								!offset ? offset : length);
+			return false;
+		}
+		if (*offset > entry.size || *length > entry.size - *offset) {
+			std::cerr << "Peer requested an invalid file range.\n";
+			return false;
+		}
+		if (entry.is_directory && (*offset != 0 || *length != 0)) {
+			std::cerr << "Peer requested payload for directory entry.\n";
+			return false;
+		}
+
+		if (!entry.is_directory) {
+			kotcpp::File file(entry.local_path);
+			auto         open_res = file.open_read_only();
+			if (!open_res) {
+				kotcpp::print_error(std::format("Cannot open file: {}",
+												entry.local_path.string()),
+									open_res);
+				return false;
+			}
+
+			const auto current_size =
+				sft_detail::get_file_size_as_size_type(entry.local_path);
+			if (!current_size) {
+				kotcpp::print_error(std::format("Cannot read file size: {}",
+												entry.local_path.string()),
+									current_size);
+				return false;
+			}
+			if (*current_size != entry.size) {
+				std::cerr << "File changed before transfer: "
+						  << entry.local_path.string() << '\n';
+				return false;
+			}
+
+			std::cout << "Sending file: " << entry.remote_path << '\n';
+			if (!sft_detail::stream_file_range_to_target(
+					target, file, entry.remote_path, *offset, *length,
+					scratch)) {
+				return false;
+			}
+			std::cout << '\n';
+		}
+
+		const auto fin = sft_detail::build_sft12_fin(file_id, *length);
+		if (!sft_detail::write_control_frame(target, fin)) {
+			return false;
+		}
+
+		auto ok_text = sft_detail::read_control_frame(target);
+		if (!ok_text) {
+			kotcpp::print_error("Fail to receive sft1.2 completion", ok_text);
+			return false;
+		}
+		auto ok = sft_detail::parse_sft12_frame(*ok_text);
+		if (!ok) {
+			kotcpp::print_error("Fail to parse sft1.2 completion", ok);
+			return false;
+		}
+		auto ok_id = sft_detail::parse_sft12_id_field(*ok, "OK");
+		if (ok->action != sft_detail::frame_action::Ok || !ok_id ||
+			*ok_id != file_id) {
+			std::cerr << "Receive unexpected sft1.2 completion from peer.\n";
+			return false;
+		}
+
+		++file_id;
+	}
+
+	if (!sft_detail::write_control_frame(
+			target, sft_detail::build_sft12_done(file_id))) {
+		return false;
+	}
+	auto done_ok_text = sft_detail::read_control_frame(target);
+	if (!done_ok_text) {
+		kotcpp::print_error("Fail to receive sft1.2 final completion",
+							done_ok_text);
+		return false;
+	}
+	auto done_ok = sft_detail::parse_sft12_frame(*done_ok_text);
+	if (!done_ok || done_ok->action != sft_detail::frame_action::Ok ||
+		done_ok->fields.empty() || done_ok->fields[0] != "all") {
+		std::cerr << "Receive unexpected sft1.2 final completion.\n";
+		return false;
+	}
+
+	std::cout << "All files have been received by the other side.\n";
+	return true;
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+void receive_file_v12(Target& target, std::string_view first_frame,
+					  std::vector<Byte>& scratch) {
+	std::string current_frame(first_frame);
+	const auto  output_root     = std::filesystem::current_path();
+
+	auto        read_next_frame = [&]() -> bool {
+        auto next_frame = sft_detail::read_control_frame(target);
+        if (!next_frame) {
+            kotcpp::print_error("Fail to receive sft1.2 frame", next_frame);
+            return false;
+        }
+        current_frame = std::move(*next_frame);
+        return true;
+	};
+
+	while (true) {
+		auto parsed_frame = sft_detail::parse_sft12_frame(current_frame);
+		if (!parsed_frame) {
+			kotcpp::print_error("Fail to parse sft1.2 frame", parsed_frame);
+			return;
+		}
+
+		if (parsed_frame->action == sft_detail::frame_action::Done) {
+			if (!sft_detail::write_control_frame(
+					target, sft_detail::build_sft12_ok_all())) {
+				return;
+			}
+			return;
+		}
+		if (parsed_frame->action != sft_detail::frame_action::Req) {
+			std::cerr << "Receive unexpected sft1.2 frame.\n";
+			return;
+		}
+
+		auto entry = sft_detail::parse_sft12_req(*parsed_frame);
+		if (!entry) {
+			kotcpp::print_error("Fail to parse sft1.2 request", entry);
+			return;
+		}
+
+		auto reject_current = [&](std::string_view reason) {
+			return sft_detail::write_control_frame(
+				target, sft_detail::build_sft12_rej(entry->id, reason));
+		};
+
+		auto output_path =
+			sft_detail::resolve_output_path(output_root, entry->path);
+		if (!output_path) {
+			kotcpp::print_error("Reject output path from peer", output_path);
+			if (!reject_current(output_path.error().message())) {
+				return;
+			}
+			if (!read_next_frame()) {
+				return;
+			}
+			continue;
+		}
+
+		if (entry->is_directory) {
+			if (entry->size != 0) {
+				if (!reject_current("Directory entry must not have payload.")) {
+					return;
+				}
+				if (!read_next_frame()) {
+					return;
+				}
+				continue;
+			}
+
+			std::error_code ec;
+			std::filesystem::create_directories(*output_path, ec);
+			if (ec) {
+				if (!reject_current(kotcpp::filesystem_error(ec).message())) {
+					return;
+				}
+				if (!read_next_frame()) {
+					return;
+				}
+				continue;
+			}
+
+			if (entry->permissions != std::filesystem::perms::unknown) {
+				kotcpp::File directory(*output_path);
+				(void)directory.set_permissions(entry->permissions);
+			}
+
+			if (!sft_detail::write_control_frame(
+					target, sft_detail::build_sft12_ack(entry->id, 0, 0))) {
+				return;
+			}
+
+			auto fin_text = sft_detail::read_control_frame(target);
+			if (!fin_text) {
+				kotcpp::print_error("Fail to receive sft1.2 FIN", fin_text);
+				return;
+			}
+			auto fin = sft_detail::parse_sft12_frame(*fin_text);
+			auto fin_id =
+				fin ? sft_detail::parse_sft12_id_field(*fin, "FIN")
+					: kotcpp::Result<size_t>(tl::unexpected(fin.error()));
+			if (!fin || fin->action != sft_detail::frame_action::Fin ||
+				!fin_id || *fin_id != entry->id) {
+				std::cerr << "Receive unexpected sft1.2 FIN.\n";
+				return;
+			}
+			if (!sft_detail::write_control_frame(
+					target, sft_detail::build_sft12_ok(entry->id))) {
+				return;
+			}
+			if (!read_next_frame()) {
+				return;
+			}
+			continue;
+		}
+
+		{
+			std::error_code ec;
+			if (output_path->has_parent_path()) {
+				std::filesystem::create_directories(output_path->parent_path(),
+													ec);
+				if (ec) {
+					if (!reject_current(
+							kotcpp::filesystem_error(ec).message())) {
+						return;
+					}
+					if (!read_next_frame()) {
+						return;
+					}
+					continue;
+				}
+			}
+
+			sft_detail::transfer_resume_identity identity{
+				.path        = entry->path,
+				.size        = entry->size,
+				.permissions = entry->permissions,
+				.extra       = "type=file",
+			};
+			auto state_path = sft_detail::get_resume_state_path(identity);
+			if (!state_path) {
+				if (!reject_current(state_path.error().message())) {
+					return;
+				}
+				if (!read_next_frame()) {
+					return;
+				}
+				continue;
+			}
+
+			kotcpp::SizeType offset = 0;
+			auto             state = sft_detail::load_resume_state(*state_path);
+			if (!state) {
+				kotcpp::print_error("Fail to load resume state", state);
+				offset = 0;
+			}
+			else if (state->has_value()) {
+				offset = (*state)->received_bytes;
+			}
+
+			if (std::filesystem::exists(*output_path, ec) && !ec) {
+				const auto local_size = static_cast<kotcpp::SizeType>(
+					std::filesystem::file_size(*output_path, ec));
+				if (!ec) {
+					offset = std::min(offset, local_size);
+				}
+			}
+			else {
+				offset = 0;
+			}
+			offset = sft_detail::sanitize_resume_offset(offset, entry->size);
+			const auto   length = entry->size - offset;
+
+			kotcpp::File output_file(*output_path);
+			if (auto open_res = output_file.open_random_access(
+					offset == 0, kotcpp::File::iomode::RDWR);
+				!open_res) {
+				kotcpp::print_error("Fail to create file", open_res);
+				if (!reject_current(open_res.error().message())) {
+					return;
+				}
+				if (!read_next_frame()) {
+					return;
+				}
+				continue;
+			}
+
+			std::cout << std::format("Receiving file: {}\tSize: {}",
+									 output_path->string(), entry->size)
+					  << std::endl;
+			if (!sft_detail::write_control_frame(
+					target,
+					sft_detail::build_sft12_ack(entry->id, offset, length))) {
+				return;
+			}
+
+			if (!sft_detail::stream_target_range_to_file(
+					target, output_file, entry->path, offset, length,
+					entry->size, scratch, *state_path)) {
+				return;
+			}
+			std::cout << '\n';
+
+			auto fin_text = sft_detail::read_control_frame(target);
+			if (!fin_text) {
+				kotcpp::print_error("Fail to receive sft1.2 FIN", fin_text);
+				return;
+			}
+			auto fin = sft_detail::parse_sft12_frame(*fin_text);
+			if (!fin || fin->action != sft_detail::frame_action::Fin) {
+				std::cerr << "Receive unexpected sft1.2 FIN.\n";
+				return;
+			}
+			auto fin_id = sft_detail::parse_sft12_id_field(*fin, "FIN");
+			auto sent   = sft_detail::get_size_option(*fin, "sent");
+			if (!fin_id || !sent || *fin_id != entry->id || *sent != length) {
+				std::cerr << "Receive mismatched sft1.2 FIN.\n";
+				return;
+			}
+
+			if (auto resize_res = output_file.resize(
+					static_cast<std::uintmax_t>(entry->size));
+				!resize_res) {
+				kotcpp::print_error("Fail to resize received file", resize_res);
+				return;
+			}
+			if (entry->permissions != std::filesystem::perms::unknown) {
+				(void)output_file.set_permissions(entry->permissions);
+			}
+			if (auto remove_res = sft_detail::remove_resume_state(*state_path);
+				!remove_res) {
+				kotcpp::print_error("Fail to remove resume state", remove_res);
+				return;
+			}
+			if (!sft_detail::write_control_frame(
+					target, sft_detail::build_sft12_ok(entry->id))) {
+				return;
+			}
+		}
+		if (!read_next_frame()) {
+			return;
+		}
+	}
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+bool send_file(
+	Target& target,
+	const std::vector<std::tuple<std::unique_ptr<kotcpp::File>, std::string>>&
+				files,
+	SftProtocol protocol) {
+	if (protocol == SftProtocol::V11) {
+		return send_file_v11(target, files);
+	}
+	std::cerr << "sft1.2 sender requires path strings, not pre-opened files.\n";
+	return false;
+}
+
+template <kotcpp::AsyncTransferTarget Target>
+void receive_file(Target& target) {
+	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+
+	target.set_blocking();
+	auto first_frame = sft_detail::read_control_frame(target);
+	if (!first_frame) {
+		kotcpp::print_error("Fail to receive request", first_frame);
+		return;
+	}
+
+#ifdef DEBUG
+	std::cout << "Receive request: " << *first_frame << std::endl;
+#endif
+
+	if (sft_detail::is_sft12_frame(*first_frame)) {
+		receive_file_v12(target, *first_frame, scratch);
+	}
+	else {
+		receive_file_v11(target, *first_frame, scratch);
 	}
 }

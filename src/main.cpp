@@ -31,6 +31,7 @@ extern string info;
 
 struct sft_config {
 		SftMode        mode        = SftMode::Interactive;
+		SftProtocol    protocol    = SftProtocol::V12;
 		string         target_addr = "";
 		vector<string> file_list;
 		bool           is_one_time     = false;
@@ -47,6 +48,8 @@ void print_help() {
 		"  -t, --transfer [FILES...] Enable transfer mode for one-time task.\n"
 		"  -p, --pull [FILES...]     Enable pull mode: wait for receiver to connect or actively connect to sender to pull files. It must be combined with either -r or -t.\n"
 		"  -a, --addr <ip:port>      Directly connect to specified address (skips discovery).\n"
+		"  --protocol <1.1|1.2>      Select transfer protocol. Default is 1.2.\n"
+		"  --legacy                  Use the legacy sft1.1 transfer protocol.\n"
 		"\n"
 		"Interactive Mode: Run without -r, -t or -p to enter interactive menu.\n"
 		"Examples: \n"
@@ -96,6 +99,26 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 				config.target_addr = argv[++i];
 			}
 		}
+		else if (argv[i] == "--protocol") {
+			if (i + 1 >= argv.size()) {
+				std::cerr << "--protocol requires 1.1 or 1.2\n";
+				exit(1);
+			}
+			const auto protocol = argv[++i];
+			if (protocol == "1.1" || protocol == "sft1.1") {
+				config.protocol = SftProtocol::V11;
+			}
+			else if (protocol == "1.2" || protocol == "sft1.2") {
+				config.protocol = SftProtocol::V12;
+			}
+			else {
+				std::cerr << "--protocol requires 1.1 or 1.2\n";
+				exit(1);
+			}
+		}
+		else if (argv[i] == "--legacy") {
+			config.protocol = SftProtocol::V11;
+		}
 		else if (config.mode == SftMode::Interactive) {
 			// If no mode set yet, assume transfer mode for drag-and-drop or
 			// direct file list
@@ -137,11 +160,19 @@ string pick_network_interface() {
 
 bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 						   const vector<string>& file_list,
-						   const string&         target_addr) {
-	auto filefds_paths = get_filefd_list(file_list);
-	if (filefds_paths.empty()) {
-		std::cerr << "No valid files to send.\n";
+						   const string&         target_addr,
+						   SftProtocol           protocol) {
+	if (file_list.empty()) {
+		std::cerr << "No files to send.\n";
 		return false;
+	}
+	std::vector<std::tuple<std::unique_ptr<File>, std::string>> filefds_paths;
+	if (protocol == SftProtocol::V11) {
+		filefds_paths = get_filefd_list(file_list);
+		if (filefds_paths.empty()) {
+			std::cerr << "No valid files to send.\n";
+			return false;
+		}
 	}
 
 	auto connect_res = sft_common::establish_connection(usocket, target_addr);
@@ -155,7 +186,10 @@ bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 		return false;
 	}
 
-	return send_file(sender, filefds_paths);
+	if (protocol == SftProtocol::V11) {
+		return send_file_v11(sender, filefds_paths);
+	}
+	return send_file_v12(sender, file_list);
 }
 
 void execute_receive_task(udp_socket& usocket, sft_server& receiver,
@@ -195,11 +229,19 @@ void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
 
 void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
 							  const vector<string>& file_list,
-							  bool                  use_random_port) {
-	auto filefds_paths = get_filefd_list(file_list);
-	if (filefds_paths.empty()) {
-		std::cerr << "No valid files to send.\n";
+							  bool                  use_random_port,
+							  SftProtocol           protocol) {
+	if (file_list.empty()) {
+		std::cerr << "No files to send.\n";
 		return;
+	}
+	std::vector<std::tuple<std::unique_ptr<File>, std::string>> filefds_paths;
+	if (protocol == SftProtocol::V11) {
+		filefds_paths = get_filefd_list(file_list);
+		if (filefds_paths.empty()) {
+			std::cerr << "No valid files to send.\n";
+			return;
+		}
 	}
 
 	while (true) {
@@ -212,7 +254,12 @@ void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
 			print_error("Wait for connect failed", res);
 			break;
 		}
-		send_file(sender, filefds_paths);
+		if (protocol == SftProtocol::V11) {
+			send_file_v11(sender, filefds_paths);
+		}
+		else {
+			send_file_v12(sender, file_list);
+		}
 		break; // Exit after one successful receive in one-time mode
 	}
 }
@@ -280,7 +327,7 @@ int main(int argc, char* argv[]) {
 					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
 					execute_transfer_task(usocket, sender, files,
-										  config.target_addr);
+										  config.target_addr, config.protocol);
 				}
 			}
 		}
@@ -297,7 +344,8 @@ int main(int argc, char* argv[]) {
 					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
 					execute_sender_pull_task(usocket, sender, files,
-											 config.use_random_port);
+											 config.use_random_port,
+											 config.protocol);
 				}
 			}
 		}

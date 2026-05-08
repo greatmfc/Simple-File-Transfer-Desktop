@@ -35,6 +35,11 @@ enum class SftMode {
 	PullReceive      = 5   // Pull模式：作为接收方主动连接
 };
 
+#ifndef SFT_PROTOCOL_ENUM_DEFINED
+#define SFT_PROTOCOL_ENUM_DEFINED
+enum class SftProtocol { V11, V12 };
+#endif
+
 using std::tuple;
 using std::vector;
 using namespace kotcpp;
@@ -50,8 +55,20 @@ ResType wait_for_peers_to_connect(const kotcpp::udp_socket& local_udp_host,
 								  bool use_random_port = false);
 
 template <kotcpp::AsyncTransferTarget Target>
-bool                                               send_file(Target&                                             target,
-															 const vector<tuple<std::unique_ptr<File>, string>>& files);
+bool                                               send_file(
+												   Target& target,
+												   const vector<tuple<std::unique_ptr<File>, string>>& files,
+												   SftProtocol protocol);
+
+template <kotcpp::AsyncTransferTarget Target>
+bool                                               send_file_v11(
+												   Target& target,
+												   const vector<tuple<std::unique_ptr<File>, string>>& files);
+
+template <kotcpp::AsyncTransferTarget Target>
+bool                                               send_file_v12(
+												   Target& target,
+												   const vector<string>& files);
 
 template <kotcpp::AsyncTransferTarget Target> void receive_file(Target& target);
 
