@@ -1,8 +1,21 @@
 cmake_minimum_required(VERSION 3.25)
 
 # vcpkg 工具链配置
-set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-    CACHE STRING "Vcpkg toolchain file")
+if(NOT CMAKE_TOOLCHAIN_FILE AND DEFINED ENV{VCPKG_ROOT})
+    set(_vcpkg_toolchain_file "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+    if(EXISTS "${_vcpkg_toolchain_file}")
+        set(CMAKE_TOOLCHAIN_FILE "${_vcpkg_toolchain_file}"
+            CACHE FILEPATH "Vcpkg toolchain file")
+    endif()
+endif()
+
+if(NOT CMAKE_TOOLCHAIN_FILE)
+    message(FATAL_ERROR
+        "CMAKE_TOOLCHAIN_FILE is not set. Install vcpkg and set VCPKG_ROOT, "
+        "or pass -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake")
+elseif(NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
+    message(FATAL_ERROR "CMAKE_TOOLCHAIN_FILE does not exist: ${CMAKE_TOOLCHAIN_FILE}")
+endif()
 
 # 编译命令数据库（用于IDE和clangd支持）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -378,6 +391,12 @@ if(BUILD_TESTS)
             $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:${GNULIKE_RELEASE_FLAGS}>
             $<$<BOOL:${ENABLE_PROFILING}>:${GNULIKE_PROFILE_FLAGS}>
         )
+        target_link_options(main_transfer_test PRIVATE
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:
+            -flto
+            -static
+            >
+        )
     elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(main_transfer_test PRIVATE
             ${GNULIKE_COMMON_WARNINGS}
@@ -385,6 +404,12 @@ if(BUILD_TESTS)
             $<$<CONFIG:Debug>:${GNULIKE_DEBUG_FLAGS}>
             $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:${GNULIKE_RELEASE_FLAGS}>
             $<$<BOOL:${ENABLE_PROFILING}>:${GNULIKE_PROFILE_FLAGS}>
+        )
+        target_link_options(main_transfer_test PRIVATE
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:
+            -flto
+            -static
+            >
         )
     elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
         target_compile_options(main_transfer_test PRIVATE
@@ -399,6 +424,13 @@ if(BUILD_TESTS)
             WIN32_LEAN_AND_MEAN
             $<$<NOT:$<CONFIG:Debug>>:SODIUM_STATIC=1>
             $<$<NOT:$<CONFIG:Debug>>:SODIUM_EXPORT=>
+        )
+        target_link_options(main_transfer_test PRIVATE
+            $<$<CONFIG:Debug>:/DEBUG>
+            $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:/LTCG>
+            $<$<BOOL:${ENABLE_PROFILING}>:/DEBUG>
+            $<$<BOOL:${ENABLE_PROFILING}>:/OPT:REF>
+            $<$<BOOL:${ENABLE_PROFILING}>:/OPT:ICF>
         )
     else()
         target_compile_options(main_transfer_test PRIVATE
