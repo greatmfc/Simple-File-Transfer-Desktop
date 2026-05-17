@@ -39,11 +39,11 @@ using namespace kotcpp;
 
 static sft_header sh;
 #ifdef DEBUG
-string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
+string info = format("\033[1mSimple File Transfer Desktop version {0}, "
 					 "built in: {1} {2}. Developed by greatmfc. DEBUG\033[0m",
 					 VERSION, __DATE__, __TIME__);
 #else
-string info = format("\033[1mSimple File Transfer Desktop version {0:.1f}, "
+string info = format("\033[1mSimple File Transfer Desktop version {0}, "
 					 "built in: {1} {2}. Developed by greatmfc.\033[0m",
 					 VERSION, __DATE__, __TIME__);
 #endif // DEBUG

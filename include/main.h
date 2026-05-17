@@ -8,7 +8,7 @@
 #define TCP_PORT 10013
 #ifndef VERSION
 // The actual version is defined in CMakeLists.txt
-#define VERSION 0.1f
+#define VERSION "0.1"
 #endif
 
 #ifdef _WIN32

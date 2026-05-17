@@ -1,14 +1,27 @@
 #pragma once
 
 #include "sftclass.hpp"
+#include <BS_thread_pool.hpp>
+#include <algorithm>
 #include <array>
 #include <charconv>
+#include <condition_variable>
+#include <deque>
+#include <exception>
 #include <filesystem>
+#include <format>
+#include <future>
 #include <fstream>
+#include <iostream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 #include <sodium.h>
 
 #ifndef SFT_PROTOCOL_ENUM_DEFINED
@@ -22,8 +35,154 @@ enum class SftProtocol {
 namespace sft_detail {
 
 inline constexpr kotcpp::SizeType transfer_chunk_size = 4'194'304;
+inline constexpr std::size_t      transfer_pipeline_depth = 4;
 inline constexpr std::string_view sft12_version       = "sft1.2";
 inline constexpr std::string_view sft12_type          = "FIL";
+
+struct transfer_pipeline_buffer {
+		explicit transfer_pipeline_buffer(kotcpp::SizeType capacity)
+			: data(static_cast<std::size_t>(capacity)) {
+		}
+
+		std::vector<Byte> data;
+		kotcpp::SizeType  size   = 0;
+		kotcpp::SizeType  offset = 0;
+};
+
+class transfer_pipeline_queue {
+	public:
+		transfer_pipeline_queue(std::size_t depth,
+								kotcpp::SizeType buffer_size)
+			: depth_(depth),
+			  buffer_size_(buffer_size) {
+			for (std::size_t i = 0; i < depth_; ++i) {
+				free_buffers_.push_back(
+					std::make_unique<transfer_pipeline_buffer>(buffer_size_));
+			}
+		}
+
+		void reset() {
+			std::lock_guard lock(mutex_);
+			while (!ready_buffers_.empty()) {
+				auto buffer = std::move(ready_buffers_.front());
+				ready_buffers_.pop_front();
+				buffer->size   = 0;
+				buffer->offset = 0;
+				free_buffers_.push_back(std::move(buffer));
+			}
+			while (free_buffers_.size() < depth_) {
+				free_buffers_.push_back(
+					std::make_unique<transfer_pipeline_buffer>(buffer_size_));
+			}
+			cancelled_    = false;
+			ready_closed_ = false;
+		}
+
+		std::unique_ptr<transfer_pipeline_buffer> acquire_free() {
+			std::unique_lock lock(mutex_);
+			free_cv_.wait(lock, [&]() {
+				return cancelled_ || !free_buffers_.empty();
+			});
+			if (cancelled_) {
+				return nullptr;
+			}
+
+			auto buffer = std::move(free_buffers_.front());
+			free_buffers_.pop_front();
+			return buffer;
+		}
+
+		bool push_ready(std::unique_ptr<transfer_pipeline_buffer> buffer) {
+			std::lock_guard lock(mutex_);
+			if (cancelled_) {
+				return false;
+			}
+
+			ready_buffers_.push_back(std::move(buffer));
+			ready_cv_.notify_one();
+			return true;
+		}
+
+		std::unique_ptr<transfer_pipeline_buffer> pop_ready() {
+			std::unique_lock lock(mutex_);
+			ready_cv_.wait(lock, [&]() {
+				return cancelled_ || ready_closed_ || !ready_buffers_.empty();
+			});
+			if (cancelled_ || ready_buffers_.empty()) {
+				return nullptr;
+			}
+
+			auto buffer = std::move(ready_buffers_.front());
+			ready_buffers_.pop_front();
+			return buffer;
+		}
+
+		void release_free(std::unique_ptr<transfer_pipeline_buffer> buffer) {
+			if (buffer == nullptr) {
+				return;
+			}
+			buffer->size   = 0;
+			buffer->offset = 0;
+
+			std::lock_guard lock(mutex_);
+			if (cancelled_) {
+				return;
+			}
+
+			free_buffers_.push_back(std::move(buffer));
+			free_cv_.notify_one();
+		}
+
+		void close_ready() {
+			std::lock_guard lock(mutex_);
+			ready_closed_ = true;
+			ready_cv_.notify_all();
+		}
+
+		void cancel() {
+			std::lock_guard lock(mutex_);
+			cancelled_    = true;
+			ready_closed_ = true;
+			free_cv_.notify_all();
+			ready_cv_.notify_all();
+		}
+
+	private:
+		std::size_t      depth_;
+		kotcpp::SizeType buffer_size_;
+		std::mutex mutex_;
+		std::condition_variable free_cv_;
+		std::condition_variable ready_cv_;
+		std::deque<std::unique_ptr<transfer_pipeline_buffer>> free_buffers_;
+		std::deque<std::unique_ptr<transfer_pipeline_buffer>> ready_buffers_;
+		bool cancelled_    = false;
+		bool ready_closed_ = false;
+};
+
+struct transfer_pipeline_context {
+		transfer_pipeline_context()
+			: pipeline(transfer_pipeline_depth, transfer_chunk_size),
+			  io_pool(std::size_t{1}) {
+		}
+
+		transfer_pipeline_queue pipeline;
+		BS::light_thread_pool   io_pool;
+};
+
+inline bool wait_for_transfer_worker(std::future<bool>& worker,
+									 std::string_view  context) {
+	try {
+		return worker.get();
+	}
+	catch (const std::exception& ex) {
+		std::cerr << context << ": " << ex.what() << '\n';
+		return false;
+	}
+	catch (...) {
+		std::cerr << context << '\n';
+		return false;
+	}
+}
 
 struct transfer_request_entry {
 		std::string      path;
@@ -938,34 +1097,67 @@ bool write_control_frame(Target& target, std::string_view frame) {
 
 template <kotcpp::AsyncTransferTarget Target>
 bool stream_file_to_target(Target& target, kotcpp::File& file,
-						   std::string_view   file_path,
-						   std::vector<Byte>& scratch) {
+						   std::string_view file_path,
+						   transfer_pipeline_context& pipeline_context) {
 	const auto file_size        = static_cast<kotcpp::SizeType>(file.size());
-	const auto scratch_size     = static_cast<kotcpp::SizeType>(scratch.size());
+	const auto chunk_capacity   = transfer_chunk_size;
 	kotcpp::SizeType bytes_sent = 0;
 	kotcpp::progress_bar_with_speed(0, file_size, true);
 
-	while (bytes_sent < file_size) {
-		const auto chunk_size = std::min(scratch_size, file_size - bytes_sent);
-		if (!read_file_exact(file, scratch.data(), chunk_size, file_path)) {
-			return false;
-		}
+	if (file_size == 0) {
+		kotcpp::progress_bar_with_speed(0, 0, true);
+		return true;
+	}
 
-		auto write_task = target.write(scratch.data(), chunk_size);
+	auto& pipeline = pipeline_context.pipeline;
+	pipeline.reset();
+	const std::string path(file_path);
+	auto reader = pipeline_context.io_pool.submit_task([&]() -> bool {
+		kotcpp::SizeType bytes_read = 0;
+		while (bytes_read < file_size) {
+			auto buffer = pipeline.acquire_free();
+			if (buffer == nullptr) {
+				return false;
+			}
+
+			const auto chunk_size =
+				std::min(chunk_capacity, file_size - bytes_read);
+			if (!read_file_exact(file, buffer->data.data(), chunk_size, path)) {
+				pipeline.cancel();
+				return false;
+			}
+
+			buffer->size = chunk_size;
+			bytes_read += chunk_size;
+			if (!pipeline.push_ready(std::move(buffer))) {
+				return false;
+			}
+		}
+		pipeline.close_ready();
+		return true;
+	});
+
+	bool transfer_ok = true;
+	while (auto buffer = pipeline.pop_ready()) {
+		auto write_task = target.write(buffer->data.data(), buffer->size);
 		if (!finish_exact_transfer(
-				write_task, chunk_size, file_size, bytes_sent,
+				write_task, buffer->size, file_size, bytes_sent,
 				std::format("Fail to send file: {}", file_path),
 				[](kotcpp::SizeType current, kotcpp::SizeType total) {
 					kotcpp::progress_bar_with_speed(current, total);
 				})) {
-			return false;
+			transfer_ok = false;
+			pipeline.cancel();
+			break;
 		}
+
+		pipeline.release_free(std::move(buffer));
 	}
 
-	if (file_size == 0) {
-		kotcpp::progress_bar_with_speed(0, 0, true);
+	if (!wait_for_transfer_worker(reader, "File reader worker failed")) {
+		transfer_ok = false;
 	}
-	return true;
+	return transfer_ok;
 }
 
 inline std::filesystem::perms
@@ -985,7 +1177,7 @@ bool stream_file_range_to_target(Target& target, kotcpp::File& file,
 								 std::string_view   file_path,
 								 kotcpp::SizeType   offset,
 								 kotcpp::SizeType   length,
-								 std::vector<Byte>& scratch) {
+								 transfer_pipeline_context& pipeline_context) {
 	const auto file_size = static_cast<kotcpp::SizeType>(file.size());
 	if (offset < 0 || length < 0 || offset > file_size ||
 		length > file_size - offset) {
@@ -993,32 +1185,65 @@ bool stream_file_range_to_target(Target& target, kotcpp::File& file,
 		return false;
 	}
 
-	const auto scratch_size     = static_cast<kotcpp::SizeType>(scratch.size());
+	const auto chunk_capacity   = transfer_chunk_size;
 	kotcpp::SizeType bytes_sent = 0;
 	kotcpp::progress_bar_with_speed(offset, file_size, true);
 
-	while (bytes_sent < length) {
-		const auto chunk_size = std::min(scratch_size, length - bytes_sent);
-		if (!read_file_at_exact(file, scratch.data(), chunk_size,
-								offset + bytes_sent, file_path)) {
-			return false;
-		}
+	if (length == 0) {
+		kotcpp::progress_bar_with_speed(file_size, file_size, true);
+		return true;
+	}
 
-		auto write_task = target.write(scratch.data(), chunk_size);
+	auto& pipeline = pipeline_context.pipeline;
+	pipeline.reset();
+	const std::string path(file_path);
+	auto reader = pipeline_context.io_pool.submit_task([&]() -> bool {
+		kotcpp::SizeType bytes_read = 0;
+		while (bytes_read < length) {
+			auto buffer = pipeline.acquire_free();
+			if (buffer == nullptr) {
+				return false;
+			}
+
+			const auto chunk_size =
+				std::min(chunk_capacity, length - bytes_read);
+			if (!read_file_at_exact(file, buffer->data.data(), chunk_size,
+									offset + bytes_read, path)) {
+				pipeline.cancel();
+				return false;
+			}
+
+			buffer->size = chunk_size;
+			bytes_read += chunk_size;
+			if (!pipeline.push_ready(std::move(buffer))) {
+				return false;
+			}
+		}
+		pipeline.close_ready();
+		return true;
+	});
+
+	bool transfer_ok = true;
+	while (auto buffer = pipeline.pop_ready()) {
+		auto write_task = target.write(buffer->data.data(), buffer->size);
 		if (!finish_exact_transfer(
-				write_task, chunk_size, file_size, bytes_sent,
+				write_task, buffer->size, file_size, bytes_sent,
 				std::format("Fail to send file: {}", file_path),
 				[offset](kotcpp::SizeType current, kotcpp::SizeType total) {
 					kotcpp::progress_bar_with_speed(offset + current, total);
 				})) {
-			return false;
+			transfer_ok = false;
+			pipeline.cancel();
+			break;
 		}
+
+		pipeline.release_free(std::move(buffer));
 	}
 
-	if (length == 0) {
-		kotcpp::progress_bar_with_speed(file_size, file_size, true);
+	if (!wait_for_transfer_worker(reader, "File range reader worker failed")) {
+		transfer_ok = false;
 	}
-	return true;
+	return transfer_ok;
 }
 
 template <kotcpp::AsyncTransferTarget Target>
@@ -1046,22 +1271,58 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 								 kotcpp::SizeType             offset,
 								 kotcpp::SizeType             length,
 								 kotcpp::SizeType             total_size,
-								 std::vector<Byte>&           scratch,
-								 const std::filesystem::path& state_path) {
+								 const std::filesystem::path& state_path,
+								 transfer_pipeline_context& pipeline_context) {
 	if (offset < 0 || length < 0 || total_size < 0 || offset > total_size ||
 		length > total_size - offset) {
 		std::cerr << "Receive invalid file range.\n";
 		return false;
 	}
 
-	const auto scratch_size = static_cast<kotcpp::SizeType>(scratch.size());
+	const auto chunk_capacity = transfer_chunk_size;
 	kotcpp::SizeType bytes_received = 0;
 	kotcpp::progress_bar_with_speed(offset, total_size, true);
 
+	if (length == 0) {
+		kotcpp::progress_bar_with_speed(total_size, total_size, true);
+		return true;
+	}
+
+	auto& pipeline = pipeline_context.pipeline;
+	pipeline.reset();
+	const std::string path(file_path);
+	auto writer = pipeline_context.io_pool.submit_task([&]() -> bool {
+		while (auto buffer = pipeline.pop_ready()) {
+			if (!write_file_at_exact(output_file, buffer->data.data(),
+									 buffer->size, buffer->offset, path)) {
+				pipeline.cancel();
+				return false;
+			}
+			if (auto state_res =
+					store_resume_state(state_path, buffer->offset + buffer->size);
+				!state_res) {
+				kotcpp::print_error("Fail to update resume state", state_res);
+				pipeline.cancel();
+				return false;
+			}
+			pipeline.release_free(std::move(buffer));
+		}
+		return true;
+	});
+
+	bool transfer_ok = true;
 	while (bytes_received < length) {
-		const auto chunk_size = std::min(scratch_size, length - bytes_received);
-		auto       read_task  = target.read(scratch.data(), chunk_size);
-		const auto chunk_offset = offset + bytes_received;
+		auto buffer = pipeline.acquire_free();
+		if (buffer == nullptr) {
+			transfer_ok = false;
+			break;
+		}
+
+		const auto chunk_size =
+			std::min(chunk_capacity, length - bytes_received);
+		buffer->size         = chunk_size;
+		buffer->offset       = offset + bytes_received;
+		auto read_task       = target.read(buffer->data.data(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, total_size, bytes_received,
 				std::format("Error while trying to receive from peer: {}",
@@ -1069,40 +1330,67 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 				[offset](kotcpp::SizeType current, kotcpp::SizeType total) {
 					kotcpp::progress_bar_with_speed(offset + current, total);
 				})) {
-			return false;
+			transfer_ok = false;
+			pipeline.close_ready();
+			break;
 		}
 
-		if (!write_file_at_exact(output_file, scratch.data(), chunk_size,
-								 chunk_offset, file_path)) {
-			return false;
-		}
-		if (auto state_res =
-				store_resume_state(state_path, offset + bytes_received);
-			!state_res) {
-			kotcpp::print_error("Fail to update resume state", state_res);
-			return false;
+		if (!pipeline.push_ready(std::move(buffer))) {
+			transfer_ok = false;
+			break;
 		}
 	}
 
-	if (length == 0) {
-		kotcpp::progress_bar_with_speed(total_size, total_size, true);
+	if (transfer_ok) {
+		pipeline.close_ready();
 	}
-	return true;
+	if (!wait_for_transfer_worker(writer, "File writer worker failed")) {
+		transfer_ok = false;
+	}
+	return transfer_ok;
 }
 
 template <kotcpp::AsyncTransferTarget Target>
 bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 						   std::string_view   file_path,
-						   kotcpp::SizeType   file_size,
-						   std::vector<Byte>& scratch) {
-	const auto scratch_size = static_cast<kotcpp::SizeType>(scratch.size());
+						   kotcpp::SizeType file_size,
+						   transfer_pipeline_context& pipeline_context) {
+	const auto chunk_capacity = transfer_chunk_size;
 	kotcpp::SizeType bytes_received = 0;
 	kotcpp::progress_bar_with_speed(0, file_size, true);
 
+	if (file_size == 0) {
+		kotcpp::progress_bar_with_speed(0, 0, true);
+		return true;
+	}
+
+	auto& pipeline = pipeline_context.pipeline;
+	pipeline.reset();
+	const std::string path(file_path);
+	auto writer = pipeline_context.io_pool.submit_task([&]() -> bool {
+		while (auto buffer = pipeline.pop_ready()) {
+			if (!write_file_exact(output_file, buffer->data.data(),
+								  buffer->size, path)) {
+				pipeline.cancel();
+				return false;
+			}
+			pipeline.release_free(std::move(buffer));
+		}
+		return true;
+	});
+
+	bool transfer_ok = true;
 	while (bytes_received < file_size) {
+		auto buffer = pipeline.acquire_free();
+		if (buffer == nullptr) {
+			transfer_ok = false;
+			break;
+		}
+
 		const auto chunk_size =
-			std::min(scratch_size, file_size - bytes_received);
-		auto read_task = target.read(scratch.data(), chunk_size);
+			std::min(chunk_capacity, file_size - bytes_received);
+		buffer->size  = chunk_size;
+		auto read_task = target.read(buffer->data.data(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, file_size, bytes_received,
 				std::format("Error while trying to receive from peer: {}",
@@ -1110,19 +1398,24 @@ bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 				[](kotcpp::SizeType current, kotcpp::SizeType total) {
 					kotcpp::progress_bar_with_speed(current, total);
 				})) {
-			return false;
+			transfer_ok = false;
+			pipeline.close_ready();
+			break;
 		}
 
-		if (!write_file_exact(output_file, scratch.data(), chunk_size,
-							  file_path)) {
-			return false;
+		if (!pipeline.push_ready(std::move(buffer))) {
+			transfer_ok = false;
+			break;
 		}
 	}
 
-	if (file_size == 0) {
-		kotcpp::progress_bar_with_speed(0, 0, true);
+	if (transfer_ok) {
+		pipeline.close_ready();
 	}
-	return true;
+	if (!wait_for_transfer_worker(writer, "File writer worker failed")) {
+		transfer_ok = false;
+	}
+	return transfer_ok;
 }
 
 template <kotcpp::AsyncTransferTarget Target>
@@ -1197,7 +1490,7 @@ bool send_file_v11(
 	const std::vector<std::tuple<std::unique_ptr<kotcpp::File>, std::string>>&
 		files) {
 	const auto request = sft_detail::build_file_request(files);
-	auto       scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	auto       pipeline_context = sft_detail::transfer_pipeline_context();
 
 	target.set_blocking();
 	if (!sft_detail::write_exact_to_target(
@@ -1218,7 +1511,7 @@ bool send_file_v11(
 
 		std::cout << "Sending file: " << file_path << '\n';
 		if (!sft_detail::stream_file_to_target(target, *file, file_path,
-											   scratch)) {
+											   pipeline_context)) {
 			return false;
 		}
 		std::cout << '\n';
@@ -1236,14 +1529,15 @@ bool send_file_v11(
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file_v11(Target& target, std::string_view first_request,
-					  std::vector<Byte>& scratch) {
+void receive_file_v11(Target& target, std::string_view first_request) {
 	auto entries = sft_detail::parse_file_request(first_request);
 	if (!entries) {
 		kotcpp::print_error("Fail to parse transfer request", entries);
 		return;
 	}
 
+	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	auto pipeline_context = sft_detail::transfer_pipeline_context();
 	if (!sft_detail::send_control_code(target, '1')) {
 		return;
 	}
@@ -1310,7 +1604,8 @@ void receive_file_v11(Target& target, std::string_view first_request,
 		}
 
 		if (!sft_detail::stream_target_to_file(
-				target, file_output_stream, entry.path, entry.size, scratch)) {
+				target, file_output_stream, entry.path, entry.size,
+				pipeline_context)) {
 			return;
 		}
 		std::cout << '\n';
@@ -1322,38 +1617,6 @@ void receive_file_v11(Target& target, std::string_view first_request,
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file_v11(Target& target) {
-	auto scratch        = std::vector<Byte>(sft_detail::transfer_chunk_size);
-	auto request_buffer = std::vector<Byte>(sft_detail::transfer_chunk_size);
-
-	target.set_blocking();
-	auto request_task = target.read(request_buffer);
-	auto request_res  = sft_detail::wait_for_completion(request_task);
-	if (!request_res) {
-		kotcpp::print_error("Fail to receive request", request_res);
-		return;
-	}
-
-	const auto request_size =
-		static_cast<kotcpp::SizeType>(request_res.value());
-	const auto request_buffer_size =
-		static_cast<kotcpp::SizeType>(request_buffer.size());
-	if (request_size == 0 || request_size > request_buffer_size) {
-		std::cerr << "Receive invalid request length.\n";
-		return;
-	}
-
-	const auto request =
-		std::string_view(reinterpret_cast<const char*>(request_buffer.data()),
-						 static_cast<size_t>(request_size));
-#ifdef DEBUG
-	std::cout << "Receive request: " << request << std::endl;
-#endif
-
-	receive_file_v11(target, request, scratch);
-}
-
-template <kotcpp::AsyncTransferTarget Target>
 bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 	auto entries = sft_detail::build_sft12_send_entries(files);
 	if (entries.empty()) {
@@ -1361,7 +1624,7 @@ bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 		return false;
 	}
 
-	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	auto pipeline_context = sft_detail::transfer_pipeline_context();
 	target.set_blocking();
 
 	size_t file_id = 0;
@@ -1443,7 +1706,7 @@ bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 			std::cout << "Sending file: " << entry.remote_path << '\n';
 			if (!sft_detail::stream_file_range_to_target(
 					target, file, entry.remote_path, *offset, *length,
-					scratch)) {
+					pipeline_context)) {
 				return false;
 			}
 			std::cout << '\n';
@@ -1496,10 +1759,10 @@ bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file_v12(Target& target, std::string_view first_frame,
-					  std::vector<Byte>& scratch) {
+void receive_file_v12(Target& target, std::string_view first_frame) {
 	std::string current_frame(first_frame);
-	const auto  output_root     = std::filesystem::current_path();
+	const auto  output_root = std::filesystem::current_path();
+	auto        pipeline_context = sft_detail::transfer_pipeline_context();
 
 	auto        read_next_frame = [&]() -> bool {
         auto next_frame = sft_detail::read_control_frame(target);
@@ -1693,7 +1956,7 @@ void receive_file_v12(Target& target, std::string_view first_frame,
 
 			if (!sft_detail::stream_target_range_to_file(
 					target, output_file, entry->path, offset, length,
-					entry->size, scratch, *state_path)) {
+					entry->size, *state_path, pipeline_context)) {
 				return;
 			}
 			std::cout << '\n';
@@ -1755,8 +2018,6 @@ bool send_file(
 
 template <kotcpp::AsyncTransferTarget Target>
 void receive_file(Target& target) {
-	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
-
 	target.set_blocking();
 	auto first_frame = sft_detail::read_control_frame(target);
 	if (!first_frame) {
@@ -1769,9 +2030,9 @@ void receive_file(Target& target) {
 #endif
 
 	if (sft_detail::is_sft12_frame(*first_frame)) {
-		receive_file_v12(target, *first_frame, scratch);
+		receive_file_v12(target, *first_frame);
 	}
 	else {
-		receive_file_v11(target, *first_frame, scratch);
+		receive_file_v11(target, *first_frame);
 	}
 }

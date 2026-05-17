@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 项目配置
 project(Simple-File-Transfer-Desktop
-    VERSION 2.2
+    VERSION 2.2.1
     DESCRIPTION "Simple File Transfer Desktop Application"
     LANGUAGES CXX
 )
@@ -163,6 +163,7 @@ set(MSVC_PROFILE_FLAGS
 # ============================================================================
 find_package(unofficial-sodium CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 # ============================================================================
 # 源文件配置
@@ -198,7 +199,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-    VERSION=${PROJECT_VERSION}
+    VERSION="${PROJECT_VERSION}"
     $<$<CONFIG:Debug>:DEBUG>
     $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
 )
@@ -320,6 +321,7 @@ endif()
 target_link_libraries(${PROJECT_NAME} PRIVATE
     unofficial-sodium::sodium
     fmt::fmt
+    Threads::Threads
 )
 
 # ============================================================================
@@ -378,7 +380,7 @@ if(BUILD_TESTS)
     )
 
     target_compile_definitions(main_transfer_test PRIVATE
-        VERSION=${PROJECT_VERSION}
+        VERSION="${PROJECT_VERSION}"
         $<$<CONFIG:Debug>:DEBUG>
         $<$<NOT:$<CONFIG:Debug>>:NDEBUG>
     )
@@ -448,6 +450,7 @@ if(BUILD_TESTS)
     target_link_libraries(main_transfer_test PRIVATE
         unofficial-sodium::sodium
         fmt::fmt
+        Threads::Threads
     )
 
     set_target_properties(main_transfer_test PROPERTIES
