@@ -25,6 +25,10 @@ extern std::vector<NameIP> GetIPv4BroadcastAddresses();
 
 extern std::vector<std::string> get_utf8_argv(int argc, char** argv);
 
+namespace sft_detail {
+struct parallel_transfer_options;
+}
+
 enum class SftMode {
 	Interactive      = -1, // 交互模式
 	Receive          = 0,  // 传统接收模式
@@ -37,7 +41,7 @@ enum class SftMode {
 
 #ifndef SFT_PROTOCOL_ENUM_DEFINED
 #define SFT_PROTOCOL_ENUM_DEFINED
-enum class SftProtocol { V11, V12 };
+enum class SftProtocol { V11, V12, V13 };
 #endif
 
 using std::tuple;
@@ -69,6 +73,17 @@ template <kotcpp::AsyncTransferTarget Target>
 bool                                               send_file_v12(
 												   Target& target,
 												   const vector<string>& files);
+
+template <kotcpp::AsyncTransferTarget Target>
+bool                                               send_file_v13_parallel(
+												   Target& target,
+												   const vector<string>& files,
+												   const sft_detail::parallel_transfer_options& options);
+
+template <kotcpp::AsyncTransferTarget Target>
+void                                               receive_file(
+												   Target& target,
+												   const sft_detail::parallel_transfer_options& options);
 
 template <kotcpp::AsyncTransferTarget Target> void receive_file(Target& target);
 

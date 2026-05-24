@@ -31,11 +31,12 @@ extern string info;
 
 struct sft_config {
 		SftMode        mode        = SftMode::Interactive;
-		SftProtocol    protocol    = SftProtocol::V12;
+		SftProtocol    protocol    = SftProtocol::V13;
 		string         target_addr = "";
 		vector<string> file_list;
 		bool           is_one_time     = false;
 		bool           use_random_port = false;
+		size_t         max_workers     = 0;
 };
 
 void print_help() {
@@ -48,7 +49,9 @@ void print_help() {
 		"  -t, --transfer [FILES...] Enable transfer mode for one-time task.\n"
 		"  -p, --pull [FILES...]     Enable pull mode: wait for receiver to connect or actively connect to sender to pull files. It must be combined with either -r or -t.\n"
 		"  -a, --addr <ip:port>      Directly connect to specified address (skips discovery).\n"
-		"  --protocol <1.1|1.2>      Select transfer protocol. Default is 1.2.\n"
+		"  --protocol <1.1|1.2|1.3>  Select transfer protocol. Default is 1.2.\n"
+		"  --parallel                Use sft1.3 parallel transfer.\n"
+		"  --workers <N>             Limit sft1.3 worker connections. Default is min(local threads, payload files).\n"
 		"  --legacy                  Use the legacy sft1.1 transfer protocol.\n"
 		"\n"
 		"Interactive Mode: Run without -r, -t or -p to enter interactive menu.\n"
@@ -101,7 +104,7 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 		}
 		else if (argv[i] == "--protocol") {
 			if (i + 1 >= argv.size()) {
-				std::cerr << "--protocol requires 1.1 or 1.2\n";
+				std::cerr << "--protocol requires 1.1, 1.2 or 1.3\n";
 				exit(1);
 			}
 			const auto protocol = argv[++i];
@@ -111,10 +114,23 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 			else if (protocol == "1.2" || protocol == "sft1.2") {
 				config.protocol = SftProtocol::V12;
 			}
+			else if (protocol == "1.3" || protocol == "sft1.3") {
+				config.protocol = SftProtocol::V13;
+			}
 			else {
-				std::cerr << "--protocol requires 1.1 or 1.2\n";
+				std::cerr << "--protocol requires 1.1, 1.2 or 1.3\n";
 				exit(1);
 			}
+		}
+		else if (argv[i] == "--parallel") {
+			config.protocol = SftProtocol::V13;
+		}
+		else if (argv[i] == "--workers") {
+			if (i + 1 >= argv.size()) {
+				std::cerr << "--workers requires a positive integer\n";
+				exit(1);
+			}
+			config.max_workers = static_cast<size_t>(stoull(argv[++i]));
 		}
 		else if (argv[i] == "--legacy") {
 			config.protocol = SftProtocol::V11;
@@ -160,8 +176,9 @@ string pick_network_interface() {
 
 bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 						   const vector<string>& file_list,
-						   const string&         target_addr,
-						   SftProtocol           protocol) {
+						   const string& target_addr, SftProtocol protocol,
+						   const string& sec_path, const string& pub_path,
+						   const string& hosts_path, size_t max_workers) {
 	if (file_list.empty()) {
 		std::cerr << "No files to send.\n";
 		return false;
@@ -189,11 +206,24 @@ bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 	if (protocol == SftProtocol::V11) {
 		return send_file_v11(sender, filefds_paths);
 	}
+	if (protocol == SftProtocol::V13) {
+		sft_detail::parallel_transfer_options options;
+		options.worker_endpoint =
+			sft_detail::parallel_worker_endpoint::Connector;
+		options.peer_addr   = connect_res.value();
+		options.sec_path    = sec_path;
+		options.pub_path    = pub_path;
+		options.hosts_path  = hosts_path;
+		options.max_workers = max_workers;
+		return send_file_v13_parallel(sender, file_list, options);
+	}
 	return send_file_v12(sender, file_list);
 }
 
 void execute_receive_task(udp_socket& usocket, sft_server& receiver,
-						  bool use_random_port) {
+						  bool use_random_port, const string& sec_path,
+						  const string& pub_path, const string& hosts_path,
+						  size_t max_workers) {
 	while (true) {
 		auto res = sft_common::wait_for_connection(usocket, receiver,
 												   use_random_port, 15);
@@ -204,7 +234,14 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 			print_error("Wait for connect failed", res);
 			break;
 		}
-		receive_file(receiver);
+		sft_detail::parallel_transfer_options options;
+		options.worker_endpoint =
+			sft_detail::parallel_worker_endpoint::Listener;
+		options.sec_path    = sec_path;
+		options.pub_path    = pub_path;
+		options.hosts_path  = hosts_path;
+		options.max_workers = max_workers;
+		receive_file(receiver, options);
 		break; // Exit after one successful receive in one-time mode
 	}
 }
@@ -212,7 +249,9 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 // Maybe the pulling side should know it's target address in advance, so we can
 // skip discovery and directly connect to it.
 void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
-								const string& target_addr) {
+								const string& target_addr,
+								const string& sec_path, const string& pub_path,
+								const string& hosts_path, size_t max_workers) {
 	auto connect_res = sft_common::establish_connection(usocket, target_addr);
 	if (!connect_res) {
 		return;
@@ -224,13 +263,21 @@ void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
 		return;
 	}
 
-	return receive_file(receiver);
+	sft_detail::parallel_transfer_options options;
+	options.worker_endpoint = sft_detail::parallel_worker_endpoint::Connector;
+	options.peer_addr       = connect_res.value();
+	options.sec_path        = sec_path;
+	options.pub_path        = pub_path;
+	options.hosts_path      = hosts_path;
+	options.max_workers     = max_workers;
+	return receive_file(receiver, options);
 }
 
 void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
 							  const vector<string>& file_list,
-							  bool                  use_random_port,
-							  SftProtocol           protocol) {
+							  bool use_random_port, SftProtocol protocol,
+							  const string& sec_path, const string& pub_path,
+							  const string& hosts_path, size_t max_workers) {
 	if (file_list.empty()) {
 		std::cerr << "No files to send.\n";
 		return;
@@ -256,6 +303,16 @@ void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
 		}
 		if (protocol == SftProtocol::V11) {
 			send_file_v11(sender, filefds_paths);
+		}
+		else if (protocol == SftProtocol::V13) {
+			sft_detail::parallel_transfer_options options;
+			options.worker_endpoint =
+				sft_detail::parallel_worker_endpoint::Listener;
+			options.sec_path    = sec_path;
+			options.pub_path    = pub_path;
+			options.hosts_path  = hosts_path;
+			options.max_workers = max_workers;
+			send_file_v13_parallel(sender, file_list, options);
 		}
 		else {
 			send_file_v12(sender, file_list);
@@ -310,7 +367,9 @@ int main(int argc, char* argv[]) {
 			sft_server receiver;
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
-				execute_receive_task(usocket, receiver, config.use_random_port);
+				execute_receive_task(usocket, receiver, config.use_random_port,
+									 sec_path.string(), pub_path.string(),
+									 hosts_path.string(), config.max_workers);
 			}
 		}
 		else if (mode == SftMode::TransferFiles ||
@@ -326,8 +385,10 @@ int main(int argc, char* argv[]) {
 				auto files = sft_common::get_files_from_user(
 					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
-					execute_transfer_task(usocket, sender, files,
-										  config.target_addr, config.protocol);
+					execute_transfer_task(
+						usocket, sender, files, config.target_addr,
+						config.protocol, sec_path.string(), pub_path.string(),
+						hosts_path.string(), config.max_workers);
 				}
 			}
 		}
@@ -343,9 +404,10 @@ int main(int argc, char* argv[]) {
 				auto files = sft_common::get_files_from_user(
 					config.file_list, mode == SftMode::TransferFolders);
 				if (!files.empty()) {
-					execute_sender_pull_task(usocket, sender, files,
-											 config.use_random_port,
-											 config.protocol);
+					execute_sender_pull_task(
+						usocket, sender, files, config.use_random_port,
+						config.protocol, sec_path.string(), pub_path.string(),
+						hosts_path.string(), config.max_workers);
 				}
 			}
 		}
@@ -358,8 +420,9 @@ int main(int argc, char* argv[]) {
 			}
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
-				execute_receiver_pull_task(usocket, receiver,
-										   config.target_addr);
+				execute_receiver_pull_task(
+					usocket, receiver, config.target_addr, sec_path.string(),
+					pub_path.string(), hosts_path.string(), config.max_workers);
 			}
 		}
 

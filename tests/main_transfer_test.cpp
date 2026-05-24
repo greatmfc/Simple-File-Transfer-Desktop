@@ -633,6 +633,86 @@ void test_send_file_v12_reject_skip(const fs::path& temp_root) {
 			"send_file v12 rejected file generated unexpected DONE");
 }
 
+void test_parallel_sender_worker_negotiates_task(const fs::path& temp_root) {
+	const auto     file_contents = to_bytes("worker negotiated payload");
+	const fs::path input_path    = temp_root / "send_parallel_worker.txt";
+	write_bytes_to_file(input_path, file_contents);
+
+	sft_detail::parallel_send_task task{
+		.id = 7,
+		.entry =
+			sft_detail::send_entry_v12{
+				.local_path   = input_path,
+				.remote_path  = "parallel-worker.txt",
+				.size         = static_cast<kotcpp::SizeType>(
+					file_contents.size()),
+				.is_directory = false,
+				.permissions  = fs::perms::unknown,
+			},
+	};
+	ScriptedTransferTarget target({
+		to_bytes(sft_detail::build_sft13_ack(7, 0, file_contents.size())),
+		to_bytes(sft_detail::build_sft13_ok(7)),
+	});
+	std::vector<sft_detail::parallel_send_task> tasks{task};
+	std::atomic_size_t next_task{0};
+
+	require(sft_detail::transfer_parallel_sender_tasks(target, tasks,
+													   next_task, 1),
+			"parallel sender worker task returned false");
+	const auto writes = writes_to_strings(target.writes());
+	require(writes.size() == 4,
+			"parallel sender worker should write REQ, payload, FIN and DONE");
+	require(writes[0] == sft_detail::build_sft13_req(
+						 7, task.entry.remote_path, task.entry.size, false,
+						 task.entry.permissions),
+			"parallel sender worker should negotiate the task with REQ");
+	require(target.writes()[1] == file_contents,
+			"parallel sender worker payload mismatch");
+	require(writes[2] == sft_detail::build_sft13_fin(7, file_contents.size()),
+			"parallel sender worker generated an unexpected FIN");
+	require(writes[3] == sft_detail::build_sft13_worker_done(1),
+			"parallel sender worker generated an unexpected worker DONE");
+}
+
+void test_parallel_receiver_worker_negotiates_task(const fs::path& temp_root) {
+	const auto     file_contents = to_bytes("worker received payload");
+	const fs::path output_dir    = temp_root / "receive_parallel_worker";
+
+	fs::create_directories(output_dir);
+
+	const auto request = sft_detail::build_sft13_req(
+		3, "parallel-worker.txt",
+		static_cast<kotcpp::SizeType>(file_contents.size()), false,
+		fs::perms::unknown);
+	ScriptedTransferTarget target({
+		to_bytes(request),
+		file_contents,
+		to_bytes(sft_detail::build_sft13_fin(3, file_contents.size())),
+		to_bytes(sft_detail::build_sft13_worker_done(2)),
+	});
+	sft_detail::parallel_receive_state receive_state;
+
+	require(sft_detail::receive_parallel_worker_tasks(
+				target, receive_state, output_dir, 2),
+			"parallel receiver worker task returned false");
+	require(read_file_bytes(output_dir / "parallel-worker.txt") ==
+				file_contents,
+			"parallel receiver worker payload mismatch");
+	require(sft_detail::all_parallel_receive_entries_processed(
+				receive_state, 1),
+			"parallel receiver worker did not account for negotiated task");
+
+	const auto writes = writes_to_strings(target.writes());
+	require(writes.size() == 2,
+			"parallel receiver worker should write ACK and OK");
+	require(writes[0] == sft_detail::build_sft13_ack(
+						 3, 0, file_contents.size()),
+			"parallel receiver worker generated an unexpected ACK");
+	require(writes[1] == sft_detail::build_sft13_ok(3),
+			"parallel receiver worker generated an unexpected OK");
+}
+
 void test_receive_file_v12_small(const fs::path& temp_root) {
 	const auto file_contents = to_bytes("hello v12 receive");
 	const auto request = sft_detail::build_sft12_req(
@@ -885,6 +965,8 @@ int main() {
 		test_send_file_v12_small(temp_root);
 		test_send_file_v12_resume_range(temp_root);
 		test_send_file_v12_reject_skip(temp_root);
+		test_parallel_sender_worker_negotiates_task(temp_root);
+		test_parallel_receiver_worker_negotiates_task(temp_root);
 		test_receive_file_v12_small(temp_root);
 		test_receive_file_v12_resume(temp_root);
 		test_receive_file_v12_rejects_parent_traversal(temp_root);
