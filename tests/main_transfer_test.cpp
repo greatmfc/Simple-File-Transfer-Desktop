@@ -19,10 +19,10 @@ namespace {
 
 constexpr kotcpp::SizeType kIoStep = 65'536;
 
-void require(bool condition, const std::string& message) {
-	if (!condition) {
-		throw std::runtime_error(message);
-	}
+void                       require(bool condition, const std::string& message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
 }
 
 class ScopedCurrentPath {
@@ -61,7 +61,7 @@ class SendFileTarget : public kotcpp::io_overloads<SendFileTarget> {
 			co_return static_cast<kotcpp::RetType>(1);
 		}
 
-		Task<kotcpp::ResType> write(const Byte* buf,
+		Task<kotcpp::ResType> write(const Byte*      buf,
 									kotcpp::SizeType nbytes) const {
 			++write_call_count_;
 			if (write_call_count_ == 1) {
@@ -151,7 +151,7 @@ class ReceiveFileTarget : public kotcpp::io_overloads<ReceiveFileTarget> {
 			co_return static_cast<kotcpp::RetType>(tail);
 		}
 
-		Task<kotcpp::ResType> write(const Byte* buf,
+		Task<kotcpp::ResType> write(const Byte*      buf,
 									kotcpp::SizeType nbytes) const {
 			ack_history_.emplace_back(buf, buf + nbytes);
 			co_return static_cast<kotcpp::RetType>(nbytes);
@@ -162,11 +162,11 @@ class ReceiveFileTarget : public kotcpp::io_overloads<ReceiveFileTarget> {
 		}
 
 	private:
-		std::string                              request_;
-		std::vector<Byte>                        payload_;
-		mutable bool                             request_delivered_ = false;
-		mutable size_t                           payload_offset_    = 0;
-		mutable std::vector<std::vector<Byte>>   ack_history_;
+		std::string                            request_;
+		std::vector<Byte>                      payload_;
+		mutable bool                           request_delivered_ = false;
+		mutable size_t                         payload_offset_    = 0;
+		mutable std::vector<std::vector<Byte>> ack_history_;
 };
 
 class ScriptedTransferTarget
@@ -209,7 +209,7 @@ class ScriptedTransferTarget
 			co_return static_cast<kotcpp::RetType>(next.size());
 		}
 
-		Task<kotcpp::ResType> write(const Byte* buf,
+		Task<kotcpp::ResType> write(const Byte*      buf,
 									kotcpp::SizeType nbytes) const {
 			writes_.emplace_back(buf, buf + nbytes);
 			co_return static_cast<kotcpp::RetType>(nbytes);
@@ -220,9 +220,9 @@ class ScriptedTransferTarget
 		}
 
 	private:
-		std::vector<std::vector<Byte>>              reads_;
-		mutable size_t                              read_offset_ = 0;
-		mutable std::vector<std::vector<Byte>>      writes_;
+		std::vector<std::vector<Byte>>         reads_;
+		mutable size_t                         read_offset_ = 0;
+		mutable std::vector<std::vector<Byte>> writes_;
 };
 
 std::vector<Byte> to_bytes(const std::string& value) {
@@ -310,7 +310,8 @@ void test_send_file_small(const fs::path& temp_root) {
 	files.emplace_back(open_file_for_send(input_path), "sample.txt");
 
 	SendFileTarget target;
-	require(send_file_v11(target, files), "send_file small test returned false");
+	require(send_file_v11(target, files),
+			"send_file small test returned false");
 	require(target.request() == build_request_header({{"sample.txt", 11}}),
 			"send_file generated an unexpected small-file request header");
 	require(target.payload() == file_contents,
@@ -325,7 +326,8 @@ void test_send_file_empty(const fs::path& temp_root) {
 	files.emplace_back(open_file_for_send(input_path), "empty.txt");
 
 	SendFileTarget target;
-	require(send_file_v11(target, files), "send_file empty test returned false");
+	require(send_file_v11(target, files),
+			"send_file empty test returned false");
 	require(target.request() == build_request_header({{"empty.txt", 0}}),
 			"send_file generated an unexpected empty-file request header");
 	require(target.payload().empty(),
@@ -333,8 +335,8 @@ void test_send_file_empty(const fs::path& temp_root) {
 }
 
 void test_send_file_multiple(const fs::path& temp_root) {
-	const auto alpha = to_bytes("alpha");
-	const auto beta  = to_bytes("beta-data");
+	const auto     alpha      = to_bytes("alpha");
+	const auto     beta       = to_bytes("beta-data");
 
 	const fs::path alpha_path = temp_root / "send_multi_alpha.txt";
 	const fs::path empty_path = temp_root / "send_multi_empty.txt";
@@ -352,19 +354,18 @@ void test_send_file_multiple(const fs::path& temp_root) {
 	SendFileTarget target;
 	require(send_file_v11(target, files),
 			"send_file multiple-files test returned false");
-	require(target.request() == build_request_header(
-								 {{"alpha.txt", alpha.size()},
-								  {"empty.txt", 0},
-								  {"beta.txt", beta.size()}}),
+	require(target.request() ==
+				build_request_header({{"alpha.txt", alpha.size()},
+									  {"empty.txt", 0},
+									  {"beta.txt", beta.size()}}),
 			"send_file generated an unexpected multi-file request header");
 	require(target.payload() == concatenate_bytes({alpha, beta}),
 			"send_file multi-file payload order mismatch");
 }
 
 void test_send_file_large(const fs::path& temp_root) {
-	const auto     large_contents =
-		make_patterned_bytes(static_cast<size_t>(
-			sft_detail::transfer_chunk_size + 257));
+	const auto large_contents = make_patterned_bytes(
+		static_cast<size_t>(sft_detail::transfer_chunk_size + 257));
 	const fs::path input_path = temp_root / "send_large.bin";
 	write_bytes_to_file(input_path, large_contents);
 
@@ -372,7 +373,8 @@ void test_send_file_large(const fs::path& temp_root) {
 	files.emplace_back(open_file_for_send(input_path), "large.bin");
 
 	SendFileTarget target;
-	require(send_file_v11(target, files), "send_file large test returned false");
+	require(send_file_v11(target, files),
+			"send_file large test returned false");
 	require(target.request() ==
 				build_request_header({{"large.bin", large_contents.size()}}),
 			"send_file generated an unexpected large-file request header");
@@ -381,9 +383,8 @@ void test_send_file_large(const fs::path& temp_root) {
 }
 
 void test_send_file_exact_chunk(const fs::path& temp_root) {
-	const auto     contents =
-		make_patterned_bytes(static_cast<size_t>(
-			sft_detail::transfer_chunk_size));
+	const auto contents = make_patterned_bytes(
+		static_cast<size_t>(sft_detail::transfer_chunk_size));
 	const fs::path input_path = temp_root / "send_exact_chunk.bin";
 	write_bytes_to_file(input_path, contents);
 
@@ -413,14 +414,15 @@ void test_receive_file_small(const fs::path& temp_root) {
 	receive_file(target);
 
 	const fs::path output_path = output_dir / "received.txt";
-	require(fs::exists(output_path), "receive_file small test did not create file");
+	require(fs::exists(output_path),
+			"receive_file small test did not create file");
 	require(read_file_bytes(output_path) == file_contents,
 			"receive_file small-file content mismatch");
 	require_ack_sequence(target);
 }
 
 void test_receive_file_empty(const fs::path& temp_root) {
-	const std::string request = build_request_header({{"empty.txt", 0}});
+	const std::string request    = build_request_header({{"empty.txt", 0}});
 	const fs::path    output_dir = temp_root / "receive_empty";
 
 	fs::create_directories(output_dir);
@@ -430,16 +432,17 @@ void test_receive_file_empty(const fs::path& temp_root) {
 	receive_file(target);
 
 	const fs::path output_path = output_dir / "empty.txt";
-	require(fs::exists(output_path), "receive_file empty test did not create file");
+	require(fs::exists(output_path),
+			"receive_file empty test did not create file");
 	require(read_file_bytes(output_path).empty(),
 			"receive_file empty-file output should stay empty");
 	require_ack_sequence(target);
 }
 
 void test_receive_file_multiple(const fs::path& temp_root) {
-	const auto alpha = to_bytes("alpha");
-	const auto beta  = to_bytes("beta-data");
-	const auto payload = concatenate_bytes({alpha, beta});
+	const auto        alpha   = to_bytes("alpha");
+	const auto        beta    = to_bytes("beta-data");
+	const auto        payload = concatenate_bytes({alpha, beta});
 	const std::string request =
 		build_request_header({{"alpha.txt", alpha.size()},
 							  {"empty.txt", 0},
@@ -462,9 +465,8 @@ void test_receive_file_multiple(const fs::path& temp_root) {
 }
 
 void test_receive_file_large(const fs::path& temp_root) {
-	const auto large_contents =
-		make_patterned_bytes(static_cast<size_t>(
-			sft_detail::transfer_chunk_size + 257));
+	const auto large_contents = make_patterned_bytes(
+		static_cast<size_t>(sft_detail::transfer_chunk_size + 257));
 	const std::string request =
 		build_request_header({{"large.bin", large_contents.size()}});
 	const fs::path output_dir = temp_root / "receive_large";
@@ -481,9 +483,8 @@ void test_receive_file_large(const fs::path& temp_root) {
 }
 
 void test_receive_file_exact_chunk(const fs::path& temp_root) {
-	const auto contents =
-		make_patterned_bytes(static_cast<size_t>(
-			sft_detail::transfer_chunk_size));
+	const auto contents = make_patterned_bytes(
+		static_cast<size_t>(sft_detail::transfer_chunk_size));
 	const std::string request =
 		build_request_header({{"exact_chunk.bin", contents.size()}});
 	const fs::path output_dir = temp_root / "receive_exact_chunk";
@@ -501,9 +502,8 @@ void test_receive_file_exact_chunk(const fs::path& temp_root) {
 
 void test_receive_file_nested_backslash_path(const fs::path& temp_root) {
 	const auto        file_contents = to_bytes("nested data");
-	const std::string request =
-		build_request_header({{"nested\\folder\\received.txt",
-							   file_contents.size()}});
+	const std::string request       = build_request_header(
+        {{"nested\\folder\\received.txt", file_contents.size()}});
 	const fs::path output_dir = temp_root / "receive_nested";
 
 	fs::create_directories(output_dir);
@@ -512,19 +512,19 @@ void test_receive_file_nested_backslash_path(const fs::path& temp_root) {
 	ReceiveFileTarget target(request, file_contents);
 	receive_file(target);
 
-	require(read_file_bytes(output_dir / "nested" / "folder" / "received.txt") ==
-				file_contents,
-			"receive_file should create nested directories for backslash paths");
+	require(
+		read_file_bytes(output_dir / "nested" / "folder" / "received.txt") ==
+			file_contents,
+		"receive_file should create nested directories for backslash paths");
 	require_ack_sequence(target);
 }
 
 void test_receive_file_rejects_parent_traversal(const fs::path& temp_root) {
-	const auto rejected = to_bytes("blocked");
-	const auto safe     = to_bytes("safe");
-	const auto payload  = concatenate_bytes({rejected, safe});
-	const std::string request =
-		build_request_header({{"..\\escape.txt", rejected.size()},
-							  {"safe.txt", safe.size()}});
+	const auto        rejected = to_bytes("blocked");
+	const auto        safe     = to_bytes("safe");
+	const auto        payload  = concatenate_bytes({rejected, safe});
+	const std::string request  = build_request_header(
+        {{"..\\escape.txt", rejected.size()}, {"safe.txt", safe.size()}});
 	const fs::path output_dir = temp_root / "receive_traversal";
 
 	fs::create_directories(output_dir);
@@ -541,7 +541,7 @@ void test_receive_file_rejects_parent_traversal(const fs::path& temp_root) {
 }
 
 void test_receive_file_invalid_request(const fs::path& temp_root) {
-	const std::string request = "sft1.1/FIL/bad.txt/not-a-number";
+	const std::string request    = "sft1.1/FIL/bad.txt/not-a-number";
 	const fs::path    output_dir = temp_root / "receive_invalid";
 
 	fs::create_directories(output_dir);
@@ -563,24 +563,26 @@ void test_send_file_v12_small(const fs::path& temp_root) {
 
 	std::vector<std::string> files{input_path.string()};
 
-	ScriptedTransferTarget target({
-		to_bytes(sft_detail::build_sft12_ack(0, 0, file_contents.size())),
-		to_bytes(sft_detail::build_sft12_ok(0)),
-		to_bytes(sft_detail::build_sft12_ok_all()),
-	});
+	ScriptedTransferTarget   target({
+        to_bytes(sft_detail::build_sft12_ack(0, 0, file_contents.size())),
+        to_bytes(sft_detail::build_sft12_ok(0)),
+        to_bytes(sft_detail::build_sft12_ok_all()),
+    });
 
 	require(send_file_v12(target, files),
 			"send_file v12 small test returned false");
 	const auto writes = writes_to_strings(target.writes());
-	require(writes.size() == 4, "send_file v12 should write REQ, payload, FIN, DONE");
+	require(writes.size() == 4,
+			"send_file v12 should write REQ, payload, FIN, DONE");
 
 	auto req_frame = sft_detail::parse_sft12_frame(writes[0]);
 	require(req_frame.has_value(), "send_file v12 wrote malformed REQ");
 	auto req = sft_detail::parse_sft12_req(*req_frame);
 	require(req.has_value(), "send_file v12 REQ did not parse");
 	require(req->id == 0 && req->path == input_path.filename().string() &&
-			 req->size == static_cast<kotcpp::SizeType>(file_contents.size()) &&
-			 !req->is_directory,
+				req->size ==
+					static_cast<kotcpp::SizeType>(file_contents.size()) &&
+				!req->is_directory,
 			"send_file v12 generated an unexpected REQ");
 	require(target.writes()[1] == file_contents,
 			"send_file v12 payload mismatch");
@@ -597,11 +599,11 @@ void test_send_file_v12_resume_range(const fs::path& temp_root) {
 
 	std::vector<std::string> files{input_path.string()};
 
-	ScriptedTransferTarget target({
-		to_bytes(sft_detail::build_sft12_ack(0, 4, 6)),
-		to_bytes(sft_detail::build_sft12_ok(0)),
-		to_bytes(sft_detail::build_sft12_ok_all()),
-	});
+	ScriptedTransferTarget   target({
+        to_bytes(sft_detail::build_sft12_ack(0, 4, 6)),
+        to_bytes(sft_detail::build_sft12_ok(0)),
+        to_bytes(sft_detail::build_sft12_ok_all()),
+    });
 
 	require(send_file_v12(target, files),
 			"send_file v12 resume range test returned false");
@@ -620,15 +622,16 @@ void test_send_file_v12_reject_skip(const fs::path& temp_root) {
 
 	std::vector<std::string> files{input_path.string()};
 
-	ScriptedTransferTarget target({
-		to_bytes(sft_detail::build_sft12_rej(0, "skip")),
-		to_bytes(sft_detail::build_sft12_ok_all()),
-	});
+	ScriptedTransferTarget   target({
+        to_bytes(sft_detail::build_sft12_rej(0, "skip")),
+        to_bytes(sft_detail::build_sft12_ok_all()),
+    });
 
 	require(send_file_v12(target, files),
 			"send_file v12 reject skip test returned false");
 	const auto writes = writes_to_strings(target.writes());
-	require(writes.size() == 2, "send_file v12 rejected file should write REQ and DONE");
+	require(writes.size() == 2,
+			"send_file v12 rejected file should write REQ and DONE");
 	require(writes[1] == sft_detail::build_sft12_done(1),
 			"send_file v12 rejected file generated unexpected DONE");
 }
@@ -642,30 +645,32 @@ void test_parallel_sender_worker_negotiates_task(const fs::path& temp_root) {
 		.id = 7,
 		.entry =
 			sft_detail::send_entry_v12{
-				.local_path   = input_path,
-				.remote_path  = "parallel-worker.txt",
-				.size         = static_cast<kotcpp::SizeType>(
-					file_contents.size()),
+				.local_path  = input_path,
+				.remote_path = "parallel-worker.txt",
+				.size = static_cast<kotcpp::SizeType>(file_contents.size()),
 				.is_directory = false,
 				.permissions  = fs::perms::unknown,
 			},
 	};
-	ScriptedTransferTarget target({
-		to_bytes(sft_detail::build_sft13_ack(7, 0, file_contents.size())),
-		to_bytes(sft_detail::build_sft13_ok(7)),
-	});
+	ScriptedTransferTarget                      target({
+        to_bytes(sft_detail::build_sft13_ack(7, 0, file_contents.size())),
+        to_bytes(sft_detail::build_sft13_ok(7)),
+    });
 	std::vector<sft_detail::parallel_send_task> tasks{task};
-	std::atomic_size_t next_task{0};
+	std::atomic_size_t                          next_task{0};
+	sft_detail::parallel_transfer_progress progress(file_contents.size(), true);
 
-	require(sft_detail::transfer_parallel_sender_tasks(target, tasks,
-													   next_task, 1),
+	require(sft_detail::transfer_parallel_sender_tasks(target, tasks, next_task,
+													   1, &progress),
 			"parallel sender worker task returned false");
+	require(progress.completed_bytes.load() == file_contents.size(),
+			"parallel sender worker should report completed payload bytes");
 	const auto writes = writes_to_strings(target.writes());
 	require(writes.size() == 4,
 			"parallel sender worker should write REQ, payload, FIN and DONE");
-	require(writes[0] == sft_detail::build_sft13_req(
-						 7, task.entry.remote_path, task.entry.size, false,
-						 task.entry.permissions),
+	require(writes[0] == sft_detail::build_sft13_req(7, task.entry.remote_path,
+													 task.entry.size, false,
+													 task.entry.permissions),
 			"parallel sender worker should negotiate the task with REQ");
 	require(target.writes()[1] == file_contents,
 			"parallel sender worker payload mismatch");
@@ -685,29 +690,32 @@ void test_parallel_receiver_worker_negotiates_task(const fs::path& temp_root) {
 		3, "parallel-worker.txt",
 		static_cast<kotcpp::SizeType>(file_contents.size()), false,
 		fs::perms::unknown);
-	ScriptedTransferTarget target({
-		to_bytes(request),
-		file_contents,
-		to_bytes(sft_detail::build_sft13_fin(3, file_contents.size())),
-		to_bytes(sft_detail::build_sft13_worker_done(2)),
-	});
-	sft_detail::parallel_receive_state receive_state;
+	ScriptedTransferTarget                 target({
+        to_bytes(request),
+        file_contents,
+        to_bytes(sft_detail::build_sft13_fin(3, file_contents.size())),
+        to_bytes(sft_detail::build_sft13_worker_done(2)),
+    });
+	sft_detail::parallel_receive_state     receive_state;
+	sft_detail::parallel_transfer_progress progress(file_contents.size(), true);
 
-	require(sft_detail::receive_parallel_worker_tasks(
-				target, receive_state, output_dir, 2),
+	require(sft_detail::receive_parallel_worker_tasks(target, receive_state,
+													  output_dir, 2, &progress),
 			"parallel receiver worker task returned false");
+	require(progress.completed_bytes.load() == file_contents.size(),
+			"parallel receiver worker should report completed payload bytes");
 	require(read_file_bytes(output_dir / "parallel-worker.txt") ==
 				file_contents,
 			"parallel receiver worker payload mismatch");
-	require(sft_detail::all_parallel_receive_entries_processed(
-				receive_state, 1),
-			"parallel receiver worker did not account for negotiated task");
+	require(
+		sft_detail::all_parallel_receive_entries_processed(receive_state, 1),
+		"parallel receiver worker did not account for negotiated task");
 
 	const auto writes = writes_to_strings(target.writes());
 	require(writes.size() == 2,
 			"parallel receiver worker should write ACK and OK");
-	require(writes[0] == sft_detail::build_sft13_ack(
-						 3, 0, file_contents.size()),
+	require(writes[0] ==
+				sft_detail::build_sft13_ack(3, 0, file_contents.size()),
 			"parallel receiver worker generated an unexpected ACK");
 	require(writes[1] == sft_detail::build_sft13_ok(3),
 			"parallel receiver worker generated an unexpected OK");
@@ -715,13 +723,13 @@ void test_parallel_receiver_worker_negotiates_task(const fs::path& temp_root) {
 
 void test_receive_file_v12_small(const fs::path& temp_root) {
 	const auto file_contents = to_bytes("hello v12 receive");
-	const auto request = sft_detail::build_sft12_req(
-		0, "received.txt", file_contents.size(), false,
-		static_cast<fs::perms>(0644));
+	const auto request =
+		sft_detail::build_sft12_req(0, "received.txt", file_contents.size(),
+									false, static_cast<fs::perms>(0644));
 	const fs::path output_dir = temp_root / "receive_v12_small";
 
 	fs::create_directories(output_dir);
-	ScopedCurrentPath scoped_path(output_dir);
+	ScopedCurrentPath      scoped_path(output_dir);
 
 	ScriptedTransferTarget target({
 		to_bytes(request),
@@ -734,8 +742,10 @@ void test_receive_file_v12_small(const fs::path& temp_root) {
 	require(read_file_bytes(output_dir / "received.txt") == file_contents,
 			"receive_file v12 small content mismatch");
 	const auto writes = writes_to_strings(target.writes());
-	require(writes.size() == 3, "receive_file v12 should write ACK, OK, OK/all");
-	require(writes[0] == sft_detail::build_sft12_ack(0, 0, file_contents.size()),
+	require(writes.size() == 3,
+			"receive_file v12 should write ACK, OK, OK/all");
+	require(writes[0] ==
+				sft_detail::build_sft12_ack(0, 0, file_contents.size()),
 			"receive_file v12 generated unexpected ACK");
 	require(writes[1] == sft_detail::build_sft12_ok(0),
 			"receive_file v12 generated unexpected file OK");
@@ -744,14 +754,14 @@ void test_receive_file_v12_small(const fs::path& temp_root) {
 }
 
 void test_receive_file_v12_resume(const fs::path& temp_root) {
-	const auto full_contents = to_bytes("0123456789");
-	const auto tail_contents = to_bytes("456789");
-	const fs::path output_dir = temp_root / "receive_v12_resume";
-	const fs::path output_path = output_dir / "resume.txt";
+	const auto     full_contents = to_bytes("0123456789");
+	const auto     tail_contents = to_bytes("456789");
+	const fs::path output_dir    = temp_root / "receive_v12_resume";
+	const fs::path output_path   = output_dir / "resume.txt";
 
 	fs::create_directories(output_dir);
 	write_bytes_to_file(output_path, to_bytes("0123"));
-	ScopedCurrentPath scoped_path(output_dir);
+	ScopedCurrentPath                    scoped_path(output_dir);
 
 	sft_detail::transfer_resume_identity identity{
 		.path        = "resume.txt",
@@ -764,9 +774,9 @@ void test_receive_file_v12_resume(const fs::path& temp_root) {
 	require(sft_detail::store_resume_state(*state_path, 4).has_value(),
 			"failed to seed resume state");
 
-	const auto request = sft_detail::build_sft12_req(
-		0, "resume.txt", full_contents.size(), false,
-		static_cast<fs::perms>(0644));
+	const auto request =
+		sft_detail::build_sft12_req(0, "resume.txt", full_contents.size(),
+									false, static_cast<fs::perms>(0644));
 	ScriptedTransferTarget target({
 		to_bytes(request),
 		tail_contents,
@@ -780,18 +790,19 @@ void test_receive_file_v12_resume(const fs::path& temp_root) {
 	require(!fs::exists(*state_path),
 			"receive_file v12 should remove completed resume state");
 	const auto writes = writes_to_strings(target.writes());
-	require(writes.size() == 3, "receive_file v12 resume should write ACK, OK, OK/all");
+	require(writes.size() == 3,
+			"receive_file v12 resume should write ACK, OK, OK/all");
 	require(writes[0] == sft_detail::build_sft12_ack(0, 4, 6),
 			"receive_file v12 resume generated unexpected ACK");
 }
 
 void test_receive_file_v12_rejects_parent_traversal(const fs::path& temp_root) {
 	const auto request = sft_detail::build_sft12_req(
-		0, "..\\escape.txt", 7, false, std::filesystem::perms::unknown);
+		0, "../escape.txt", 7, false, std::filesystem::perms::unknown);
 	const fs::path output_dir = temp_root / "receive_v12_reject";
 
 	fs::create_directories(output_dir);
-	ScopedCurrentPath scoped_path(output_dir);
+	ScopedCurrentPath      scoped_path(output_dir);
 
 	ScriptedTransferTarget target({
 		to_bytes(request),
@@ -802,7 +813,8 @@ void test_receive_file_v12_rejects_parent_traversal(const fs::path& temp_root) {
 	require(!fs::exists(temp_root / "escape.txt"),
 			"receive_file v12 should reject parent traversal paths");
 	const auto writes = writes_to_strings(target.writes());
-	require(writes.size() == 2, "receive_file v12 reject should write REJ and OK/all");
+	require(writes.size() == 2,
+			"receive_file v12 reject should write REJ and OK/all");
 	auto rej = sft_detail::parse_sft12_frame(writes[0]);
 	require(rej.has_value() && rej->action == sft_detail::frame_action::Rej,
 			"receive_file v12 reject should send REJ");
@@ -815,21 +827,19 @@ void test_file_random_access_helpers(const fs::path& temp_root) {
 	write_bytes_to_file(path, to_bytes("0123456789"));
 
 	kotcpp::File file(path);
-	require(file.open_random_access(false, kotcpp::File::iomode::RDWR)
-				.has_value(),
-			"failed to open file for random access");
+	require(
+		file.open_random_access(false, kotcpp::File::iomode::RDWR).has_value(),
+		"failed to open file for random access");
 
-	const auto patch = to_bytes("XYZ");
-	auto       write_res =
-		file.write_at(patch.data(), static_cast<kotcpp::SizeType>(patch.size()),
-					  4);
+	const auto patch     = to_bytes("XYZ");
+	auto       write_res = file.write_at(
+        patch.data(), static_cast<kotcpp::SizeType>(patch.size()), 4);
 	require(write_res && write_res.value() == 3,
 			"write_at should write the full patch at the requested offset");
 
 	std::array<Byte, 3> read_buf{};
-	auto read_res =
-		file.read_at(read_buf.data(), static_cast<kotcpp::SizeType>(read_buf.size()),
-					 4);
+	auto                read_res = file.read_at(
+        read_buf.data(), static_cast<kotcpp::SizeType>(read_buf.size()), 4);
 	require(read_res && read_res.value() == 3,
 			"read_at should read from the requested offset");
 	require(std::vector<Byte>(read_buf.begin(), read_buf.end()) == patch,
@@ -867,7 +877,7 @@ void test_file_permission_helpers(const fs::path& temp_root) {
 }
 
 void test_transfer_encoding_helpers() {
-	const std::string input = "nested/path with spaces.bin";
+	const std::string input   = "nested/path with spaces.bin";
 	const auto        encoded = sft_detail::base64url_encode(input);
 	require(encoded.find('/') == std::string::npos,
 			"base64url encoding should not contain path separators");
@@ -883,7 +893,8 @@ void test_transfer_encoding_helpers() {
 	const auto hash_b = sft_detail::generic_hash_base64url("same");
 	const auto hash_c = sft_detail::generic_hash_base64url("different");
 	require(hash_a == hash_b, "hash helper should be deterministic");
-	require(hash_a != hash_c, "hash helper should distinguish different inputs");
+	require(hash_a != hash_c,
+			"hash helper should distinguish different inputs");
 }
 
 void test_resume_state_helpers(const fs::path& temp_root) {
@@ -897,16 +908,15 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 	other_identity.size                                 = 54321;
 
 	const auto filename = sft_detail::build_resume_state_filename(identity);
-	require(filename.starts_with("sft12-") &&
-			 filename.ends_with(".state"),
+	require(filename.starts_with("sft12-") && filename.ends_with(".state"),
 			"resume state filename should use the expected wrapper");
 	require(filename.find('/') == std::string::npos &&
-			 filename.find('\\') == std::string::npos,
+				filename.find('\\') == std::string::npos,
 			"resume state filename should be safe for a single path component");
 	require(filename != sft_detail::build_resume_state_filename(other_identity),
 			"resume state filename should change when identity fields change");
 
-	const fs::path state_path = temp_root / filename;
+	const fs::path state_path  = temp_root / filename;
 	auto           empty_state = sft_detail::load_resume_state(state_path);
 	require(empty_state.has_value() && !empty_state->has_value(),
 			"missing resume state should load as empty");
@@ -915,7 +925,7 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 			"store_resume_state failed");
 	auto loaded = sft_detail::load_resume_state(state_path);
 	require(loaded.has_value() && loaded->has_value() &&
-			 (*loaded)->received_bytes == 4096,
+				(*loaded)->received_bytes == 4096,
 			"load_resume_state returned an unexpected byte count");
 
 	require(sft_detail::sanitize_resume_offset(4096, 8192) == 4096,
@@ -940,10 +950,8 @@ int main() {
 		return 1;
 	}
 
-	const auto unique_suffix =
-		std::to_string(std::chrono::steady_clock::now()
-						   .time_since_epoch()
-						   .count());
+	const auto unique_suffix = std::to_string(
+		std::chrono::steady_clock::now().time_since_epoch().count());
 	const fs::path temp_root =
 		fs::temp_directory_path() / ("main_transfer_test_" + unique_suffix);
 
@@ -977,8 +985,7 @@ int main() {
 		fs::remove_all(temp_root);
 		std::cout << "main_transfer_test passed\n";
 		return 0;
-	}
-	catch (const std::exception& ex) {
+	} catch (const std::exception& ex) {
 		fs::remove_all(temp_root);
 		std::cerr << "main_transfer_test failed: " << ex.what() << '\n';
 		return 1;
