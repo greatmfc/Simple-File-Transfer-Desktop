@@ -107,10 +107,10 @@ void progress_bar_with_speed_t(size_t num, size_t total_num,
  * @param total 总字节数
  * @param restart 是否重置状态（在新传输开始前调用）
  */
-inline void progress_bar_with_speed(long long current, long long total,
+inline void progress_bar_with_speed(size_t current, size_t total,
 									bool restart = false) {
-	static std::mutex progress_mutex;
-	std::lock_guard   progress_lock(progress_mutex);
+	// static std::mutex progress_mutex;
+	// std::lock_guard   progress_lock(progress_mutex);
 	static auto      start_time      = std::chrono::steady_clock::now();
 	static auto      last_time       = std::chrono::steady_clock::now();
 	static auto      last_print_time = std::chrono::steady_clock::now();
