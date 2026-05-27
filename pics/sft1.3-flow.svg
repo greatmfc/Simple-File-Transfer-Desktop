@@ -1,0 +1,232 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="2140" viewBox="0 0 1320 2140" role="img" aria-labelledby="title desc">
+  <title id="title">sft1.3 parallel file transfer protocol flow</title>
+  <desc id="desc">A sequence diagram showing the sft1.3 parallel transfer flow: the control connection negotiates worker count and final completion, while each worker connection joins the session, negotiates file requests, transfers payload ranges, and confirms per-file completion.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#1f2937"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#059669"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .lane { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; }
+      .lane-title { fill: #0f172a; font: 700 22px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .lane-subtitle { fill: #64748b; font: 500 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #0f172a; font: 800 34px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .subtitle { fill: #475569; font: 400 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .lifeline { stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 8 9; }
+      .section { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; }
+      .section-text { fill: #312e81; font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; rx: 8; }
+      .box-text { fill: #111827; font: 500 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .note { fill: #fffbeb; stroke: #f59e0b; stroke-width: 1.3; rx: 8; }
+      .note-text { fill: #78350f; font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .ok { fill: #ecfdf5; stroke: #10b981; stroke-width: 1.4; rx: 8; }
+      .reject { fill: #fef2f2; stroke: #ef4444; stroke-width: 1.4; rx: 8; }
+      .worker { fill: #f0fdfa; stroke: #14b8a6; stroke-width: 1.4; rx: 8; }
+      .control { fill: #eff6ff; stroke: #60a5fa; stroke-width: 1.4; rx: 8; }
+      .wire { stroke: #1f2937; stroke-width: 2.2; marker-end: url(#arrow); fill: none; }
+      .wire-blue { stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); fill: none; }
+      .wire-green { stroke: #059669; stroke-width: 2.4; marker-end: url(#arrow-green); fill: none; }
+      .wire-red { stroke: #b91c1c; stroke-width: 2.2; marker-end: url(#arrow-red); fill: none; }
+      .wire-dash { stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 7; marker-end: url(#arrow); fill: none; }
+      .wire-worker-dash { stroke: #0f766e; stroke-width: 2; stroke-dasharray: 8 7; marker-end: url(#arrow-green); fill: none; }
+      .msg { fill: #0f172a; font: 700 14px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .small { fill: #475569; font: 500 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono-small { fill: #334155; font: 500 12px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .step { fill: #334155; font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1320" height="2140"/>
+
+  <text x="64" y="66" class="title">sft1.3 Parallel Transfer Flow</text>
+  <text x="64" y="96" class="subtitle">Control connection negotiates workers and final completion; worker TCP connections independently negotiate and transfer file tasks.</text>
+
+  <rect x="48" y="130" width="285" height="1900" class="lane"/>
+  <rect x="365" y="130" width="285" height="1900" class="lane"/>
+  <rect x="690" y="130" width="285" height="1900" class="lane"/>
+  <rect x="1005" y="130" width="285" height="1900" class="lane"/>
+
+  <text x="190" y="170" text-anchor="middle" class="lane-title">Sender Control</text>
+  <text x="190" y="193" text-anchor="middle" class="lane-subtitle">main secure connection</text>
+  <text x="507" y="170" text-anchor="middle" class="lane-title">Sender Workers</text>
+  <text x="507" y="193" text-anchor="middle" class="lane-subtitle">N independent TCP connections</text>
+  <text x="832" y="170" text-anchor="middle" class="lane-title">Receiver Workers</text>
+  <text x="832" y="193" text-anchor="middle" class="lane-subtitle">N independent TCP connections</text>
+  <text x="1147" y="170" text-anchor="middle" class="lane-title">Receiver Control</text>
+  <text x="1147" y="193" text-anchor="middle" class="lane-subtitle">main secure connection</text>
+
+  <line x1="190" y1="215" x2="190" y2="2028" class="lifeline"/>
+  <line x1="507" y1="215" x2="507" y2="2028" class="lifeline"/>
+  <line x1="832" y1="215" x2="832" y2="2028" class="lifeline"/>
+  <line x1="1147" y1="215" x2="1147" y2="2028" class="lifeline"/>
+
+  <rect x="250" y="232" width="820" height="38" class="section"/>
+  <text x="660" y="257" text-anchor="middle" class="section-text">Existing authenticated control connection is already established</text>
+
+  <rect x="78" y="306" width="224" height="140" class="box"/>
+  <text x="96" y="334" class="box-text">Build transfer entries</text>
+  <text x="96" y="358" class="small">Collect all files and dirs.</text>
+  <text x="96" y="378" class="small">Assign stable entry ids.</text>
+  <text x="96" y="398" class="small">Default workers:</text>
+  <text x="96" y="416" class="mono-small">min(local_threads,</text>
+  <text x="96" y="432" class="mono-small">entry_count)</text>
+
+  <rect x="1036" y="306" width="224" height="110" class="box"/>
+  <text x="1054" y="334" class="box-text">Wait for sft1.3 HELLO</text>
+  <text x="1054" y="358" class="small">If first frame is HELLO,</text>
+  <text x="1054" y="378" class="small">enter parallel path.</text>
+  <text x="1054" y="398" class="small">Otherwise keep legacy paths.</text>
+
+  <rect x="250" y="455" width="820" height="38" class="section"/>
+  <text x="660" y="480" text-anchor="middle" class="section-text">Control connection negotiates the parallel session</text>
+
+  <rect x="78" y="530" width="224" height="130" class="control"/>
+  <text x="96" y="558" class="box-text">Open worker listener</text>
+  <text x="96" y="582" class="box-text">if this side listens</text>
+  <text x="96" y="606" class="small">Create session id.</text>
+  <text x="96" y="626" class="small">Create worker token.</text>
+  <text x="96" y="646" class="small">Advertise proposed worker count.</text>
+
+  <line x1="302" y1="592" x2="1036" y2="592" class="wire-blue"/>
+  <text x="660" y="572" text-anchor="middle" class="msg">HELLO(workers, files, count, bytes, port, session, token)</text>
+
+  <rect x="1036" y="530" width="224" height="118" class="control"/>
+  <text x="1054" y="558" class="box-text">Accept worker count</text>
+  <text x="1054" y="582" class="small">Compute local default.</text>
+  <text x="1054" y="602" class="mono-small">accepted=min(peer, local)</text>
+  <text x="1054" y="622" class="small">Open listener if receiver listens.</text>
+
+  <line x1="1036" y1="700" x2="302" y2="700" class="wire-blue"/>
+  <text x="660" y="680" text-anchor="middle" class="msg">READY(workers, optional port/session/token)</text>
+
+  <rect x="78" y="680" width="224" height="76" class="ok"/>
+  <text x="96" y="708" class="box-text">Start worker pool</text>
+  <text x="96" y="732" class="small">Use negotiated worker count.</text>
+
+  <rect x="1036" y="744" width="224" height="76" class="ok"/>
+  <text x="1054" y="772" class="box-text">Start receiver workers</text>
+  <text x="1054" y="796" class="small">Workers own file negotiation.</text>
+
+  <rect x="250" y="850" width="820" height="38" class="section"/>
+  <text x="660" y="875" text-anchor="middle" class="section-text">Each worker establishes its own authenticated TCP connection</text>
+
+  <rect x="395" y="925" width="224" height="98" class="worker"/>
+  <text x="413" y="953" class="box-text">Connect or accept worker TCP</text>
+  <text x="413" y="977" class="small">Same secure-channel handshake</text>
+  <text x="413" y="997" class="small">as the control connection.</text>
+
+  <rect x="720" y="925" width="224" height="98" class="worker"/>
+  <text x="738" y="953" class="box-text">Connect or accept peer worker</text>
+  <text x="738" y="977" class="small">One TCP connection per worker.</text>
+  <text x="738" y="997" class="small">Transfer data stays encrypted.</text>
+
+  <line x1="619" y1="974" x2="720" y2="974" class="wire-green"/>
+  <text x="670" y="912" text-anchor="middle" class="msg">TCP + secure handshake</text>
+
+  <rect x="395" y="1060" width="224" height="90" class="worker"/>
+  <text x="413" y="1088" class="box-text">Join parallel session</text>
+  <text x="413" y="1112" class="mono-small">JOIN(session,token,</text>
+  <text x="413" y="1130" class="mono-small">worker_id)</text>
+
+  <line x1="619" y1="1098" x2="720" y2="1098" class="wire-green"/>
+  <text x="670" y="1078" text-anchor="middle" class="msg">JOIN</text>
+
+  <rect x="720" y="1060" width="224" height="90" class="worker"/>
+  <text x="738" y="1088" class="box-text">Verify session token</text>
+  <text x="738" y="1112" class="mono-small">READY</text>
+
+  <line x1="720" y1="1166" x2="619" y2="1166" class="wire-green"/>
+  <text x="670" y="1146" text-anchor="middle" class="msg">READY</text>
+
+  <rect x="250" y="1200" width="820" height="38" class="section"/>
+  <text x="660" y="1225" text-anchor="middle" class="section-text">Worker-owned per-file task loop</text>
+
+  <rect x="395" y="1268" width="224" height="92" class="worker"/>
+  <text x="413" y="1296" class="box-text">Fetch next entry atomically</text>
+  <text x="413" y="1320" class="small">No control-thread per-file</text>
+  <text x="413" y="1340" class="small">REQ/ACK loop.</text>
+
+  <line x1="619" y1="1320" x2="720" y2="1320" class="wire-green"/>
+  <text x="670" y="1250" text-anchor="middle" class="msg">REQ(id,path,size,type,perm)</text>
+
+  <rect x="720" y="1268" width="224" height="112" class="worker"/>
+  <text x="738" y="1296" class="box-text">Parse and validate entry</text>
+  <text x="738" y="1320" class="small">Reject unsafe paths.</text>
+  <text x="738" y="1340" class="small">Reject duplicate ids or paths.</text>
+  <text x="738" y="1360" class="small">Compute resume offset/length.</text>
+
+  <rect x="720" y="1415" width="224" height="72" class="reject"/>
+  <text x="738" y="1443" class="box-text">Reject this entry</text>
+  <text x="738" y="1467" class="mono-small">REJ(id, reason)</text>
+
+  <line x1="720" y1="1452" x2="619" y2="1452" class="wire-red"/>
+  <text x="670" y="1432" text-anchor="middle" class="msg">REJ</text>
+
+  <rect x="395" y="1415" width="224" height="72" class="reject"/>
+  <text x="413" y="1443" class="box-text">Skip rejected entry</text>
+  <text x="413" y="1467" class="small">Worker fetches another task.</text>
+
+  <line x1="720" y1="1518" x2="619" y2="1518" class="wire-green"/>
+  <text x="670" y="1498" text-anchor="middle" class="msg">ACK(offset,length)</text>
+
+  <rect x="395" y="1505" width="224" height="104" class="ok"/>
+  <text x="413" y="1533" class="box-text">Open file after ACK</text>
+  <text x="413" y="1557" class="small">Verify size did not change.</text>
+  <text x="413" y="1577" class="small">Send requested range only.</text>
+
+  <rect x="720" y="1505" width="224" height="104" class="ok"/>
+  <text x="738" y="1533" class="box-text">Open output after ACK</text>
+  <text x="738" y="1557" class="small">Write at negotiated offset.</text>
+  <text x="738" y="1577" class="small">Update resume state.</text>
+
+  <line x1="619" y1="1642" x2="720" y2="1642" class="wire"/>
+  <text x="670" y="1622" text-anchor="middle" class="msg">payload bytes</text>
+
+  <line x1="619" y1="1688" x2="720" y2="1688" class="wire-green"/>
+  <text x="670" y="1668" text-anchor="middle" class="msg">FIN(sent=length)</text>
+
+  <line x1="720" y1="1732" x2="619" y2="1732" class="wire-green"/>
+  <text x="670" y="1712" text-anchor="middle" class="msg">OK(id)</text>
+
+  <path d="M 507 1746 C 346 1746, 346 1250, 507 1250" class="wire-worker-dash"/>
+  <text x="356" y="1628" class="step">loop until no local tasks remain</text>
+
+  <line x1="619" y1="1780" x2="720" y2="1780" class="wire-green"/>
+  <text x="670" y="1760" text-anchor="middle" class="msg">WORKER-DONE(worker_id)</text>
+
+  <rect x="250" y="1810" width="820" height="38" class="section"/>
+  <text x="660" y="1835" text-anchor="middle" class="section-text">Control connection finalizes only after all workers finish</text>
+
+  <line x1="507" y1="1880" x2="190" y2="1880" class="wire-dash"/>
+  <text x="348" y="1860" text-anchor="middle" class="msg">worker futures complete</text>
+
+  <line x1="832" y1="1880" x2="1147" y2="1880" class="wire-dash"/>
+  <text x="990" y="1860" text-anchor="middle" class="msg">worker futures complete</text>
+
+  <rect x="78" y="1908" width="224" height="72" class="control"/>
+  <text x="96" y="1936" class="box-text">Send final DONE</text>
+  <text x="96" y="1960" class="mono-small">DONE(count=entry_count)</text>
+
+  <line x1="302" y1="1948" x2="1036" y2="1948" class="wire-blue"/>
+  <text x="660" y="1928" text-anchor="middle" class="msg">DONE(count)</text>
+
+  <rect x="1036" y="1908" width="224" height="72" class="control"/>
+  <text x="1054" y="1936" class="box-text">Verify final accounting</text>
+  <text x="1054" y="1960" class="small">processed_entries == count</text>
+
+  <line x1="1036" y1="2016" x2="302" y2="2016" class="wire-blue"/>
+  <text x="660" y="1996" text-anchor="middle" class="msg">OK(all)</text>
+
+  <rect x="66" y="2045" width="1188" height="72" class="note"/>
+  <text x="92" y="2075" class="note-text">Worker threads own per-file negotiation. The control threads wait for worker completion and then finalize the session with DONE(count) and OK(all).</text>
+  <text x="92" y="2103" class="note-text">The sft1.3 parallel wire flow is not compatible with sft1.2 peers; use the default sft1.2 path unless both sides opt into parallel mode.</text>
+</svg>
