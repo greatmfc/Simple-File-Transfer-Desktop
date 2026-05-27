@@ -39,11 +39,11 @@ enum class SftProtocol {
 
 namespace sft_detail {
 
-inline constexpr kotcpp::SizeType transfer_chunk_size = 4'194'304;
+inline constexpr kotcpp::SizeType transfer_chunk_size     = 4'194'304;
 inline constexpr std::size_t      transfer_pipeline_depth = 4;
-inline constexpr std::string_view sft12_version       = "sft1.2";
-inline constexpr std::string_view sft13_version       = "sft1.3";
-inline constexpr std::string_view sft12_type          = "FIL";
+inline constexpr std::string_view sft12_version           = "sft1.2";
+inline constexpr std::string_view sft13_version           = "sft1.3";
+inline constexpr std::string_view sft12_type              = "FIL";
 
 struct transfer_pipeline_buffer {
 		explicit transfer_pipeline_buffer(kotcpp::SizeType capacity)
@@ -57,10 +57,8 @@ struct transfer_pipeline_buffer {
 
 class transfer_pipeline_queue {
 	public:
-		transfer_pipeline_queue(std::size_t depth,
-								kotcpp::SizeType buffer_size)
-			: depth_(depth),
-			  buffer_size_(buffer_size) {
+		transfer_pipeline_queue(std::size_t depth, kotcpp::SizeType buffer_size)
+			: depth_(depth), buffer_size_(buffer_size) {
 			for (std::size_t i = 0; i < depth_; ++i) {
 				free_buffers_.push_back(
 					std::make_unique<transfer_pipeline_buffer>(buffer_size_));
@@ -86,9 +84,8 @@ class transfer_pipeline_queue {
 
 		std::unique_ptr<transfer_pipeline_buffer> acquire_free() {
 			std::unique_lock lock(mutex_);
-			free_cv_.wait(lock, [&]() {
-				return cancelled_ || !free_buffers_.empty();
-			});
+			free_cv_.wait(
+				lock, [&]() { return cancelled_ || !free_buffers_.empty(); });
 			if (cancelled_) {
 				return nullptr;
 			}
@@ -154,11 +151,11 @@ class transfer_pipeline_queue {
 		}
 
 	private:
-		std::size_t      depth_;
-		kotcpp::SizeType buffer_size_;
-		std::mutex mutex_;
-		std::condition_variable free_cv_;
-		std::condition_variable ready_cv_;
+		std::size_t                                           depth_;
+		kotcpp::SizeType                                      buffer_size_;
+		std::mutex                                            mutex_;
+		std::condition_variable                               free_cv_;
+		std::condition_variable                               ready_cv_;
 		std::deque<std::unique_ptr<transfer_pipeline_buffer>> free_buffers_;
 		std::deque<std::unique_ptr<transfer_pipeline_buffer>> ready_buffers_;
 		bool cancelled_    = false;
@@ -183,23 +180,21 @@ enum class parallel_worker_endpoint {
 struct parallel_transfer_options {
 		parallel_worker_endpoint worker_endpoint =
 			parallel_worker_endpoint::Connector;
-		sockaddr_in  peer_addr{};
-		std::string  sec_path;
-		std::string  pub_path;
-		std::string  hosts_path;
-		std::size_t  max_workers = 0;
+		sockaddr_in peer_addr{};
+		std::string sec_path;
+		std::string pub_path;
+		std::string hosts_path;
+		std::size_t max_workers = 0;
 };
 
 inline bool wait_for_transfer_worker(std::future<bool>& worker,
-									 std::string_view  context) {
+									 std::string_view   context) {
 	try {
 		return worker.get();
-	}
-	catch (const std::exception& ex) {
+	} catch (const std::exception& ex) {
 		std::cerr << context << ": " << ex.what() << '\n';
 		return false;
-	}
-	catch (...) {
+	} catch (...) {
 		std::cerr << context << '\n';
 		return false;
 	}
@@ -513,9 +508,9 @@ inline void
 append_sft12_directory_entry(std::vector<send_entry_v12>& entries,
 							 const std::filesystem::path& local_path,
 							 std::string                  remote_path) {
-	normalize_remote_path_separators(remote_path);
+	// normalize_remote_path_separators(remote_path);
 	if (!is_directory_marker(remote_path)) {
-		remote_path += '\\';
+		remote_path += '/';
 	}
 	entries.push_back({local_path, remote_path, 0, true,
 					   get_path_permissions_or_unknown(local_path)});
@@ -532,7 +527,7 @@ inline void append_sft12_file_entry(std::vector<send_entry_v12>& entries,
 		return;
 	}
 
-	normalize_remote_path_separators(remote_path);
+	// normalize_remote_path_separators(remote_path);
 	entries.push_back({local_path, remote_path, *size, false,
 					   get_path_permissions_or_unknown(local_path)});
 }
@@ -564,7 +559,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 				std::cerr << "Cannot derive folder name for: " << path << '\n';
 				continue;
 			}
-			folder_name += '\\';
+			folder_name += '/';
 			append_sft12_directory_entry(entries, path, folder_name);
 
 			std::filesystem::recursive_directory_iterator iter(path, ec);
@@ -758,8 +753,8 @@ get_size_option(const sft12_frame& frame, std::string_view key) {
 	return parse_size_type(found->second, key);
 }
 
-inline kotcpp::Result<size_t>
-get_size_t_option(const sft12_frame& frame, std::string_view key) {
+inline kotcpp::Result<size_t> get_size_t_option(const sft12_frame& frame,
+												std::string_view   key) {
 	auto found = frame.options.find(std::string(key));
 	if (found == frame.options.end()) {
 		return tl::unexpected(kotcpp::make_sft_error(
@@ -768,8 +763,8 @@ get_size_t_option(const sft12_frame& frame, std::string_view key) {
 	return parse_size_t(found->second, key);
 }
 
-inline kotcpp::Result<sft12_frame>
-parse_sft_frame(std::string_view frame, std::string_view version) {
+inline kotcpp::Result<sft12_frame> parse_sft_frame(std::string_view frame,
+												   std::string_view version) {
 	const auto fields = kotcpp::str_split(frame, "/");
 	if (fields.size() < 3) {
 		return tl::unexpected(
@@ -868,8 +863,9 @@ inline std::size_t get_local_thread_count() {
 							  : static_cast<std::size_t>(local_threads);
 }
 
-inline std::size_t get_default_parallel_worker_count(
-	std::size_t payload_file_count, std::size_t configured_max = 0) {
+inline std::size_t
+get_default_parallel_worker_count(std::size_t payload_file_count,
+								  std::size_t configured_max = 0) {
 	auto workers = std::min(get_local_thread_count(), payload_file_count);
 	if (configured_max != 0) {
 		workers = std::min(workers, configured_max);
@@ -883,15 +879,14 @@ inline std::string random_base64url_token(std::size_t byte_count = 32) {
 	return base64url_encode(bytes.data(), bytes.size());
 }
 
-inline std::string build_sft13_hello(std::size_t proposed_workers,
-									 std::size_t payload_files,
-									 std::size_t entry_count,
+inline std::string build_sft13_hello(std::size_t             proposed_workers,
+									 std::size_t             payload_files,
+									 std::size_t             entry_count,
 									 std::optional<uint16_t> worker_port = {},
-									 std::string_view session_id = {},
-									 std::string_view worker_token = {}) {
-	auto frame =
-		std::format("sft1.3/FIL/HELLO/workers={}/files={}/count={}",
-					proposed_workers, payload_files, entry_count);
+									 std::string_view        session_id  = {},
+									 std::string_view worker_token       = {}) {
+	auto frame = std::format("sft1.3/FIL/HELLO/workers={}/files={}/count={}",
+							 proposed_workers, payload_files, entry_count);
 	if (worker_port.has_value()) {
 		frame += std::format("/port={}/session={}/token={}", *worker_port,
 							 session_id, worker_token);
@@ -899,12 +894,11 @@ inline std::string build_sft13_hello(std::size_t proposed_workers,
 	return frame;
 }
 
-inline std::string build_sft13_ready(std::size_t accepted_workers,
+inline std::string build_sft13_ready(std::size_t             accepted_workers,
 									 std::optional<uint16_t> worker_port = {},
-									 std::string_view session_id = {},
-									 std::string_view worker_token = {}) {
-	auto frame =
-		std::format("sft1.3/FIL/READY/workers={}", accepted_workers);
+									 std::string_view        session_id  = {},
+									 std::string_view worker_token       = {}) {
+	auto frame = std::format("sft1.3/FIL/READY/workers={}", accepted_workers);
 	if (worker_port.has_value()) {
 		frame += std::format("/port={}/session={}/token={}", *worker_port,
 							 session_id, worker_token);
@@ -914,7 +908,7 @@ inline std::string build_sft13_ready(std::size_t accepted_workers,
 
 inline std::string build_sft13_join(std::string_view session_id,
 									std::string_view worker_token,
-									std::size_t worker_id) {
+									std::size_t      worker_id) {
 	return std::format("sft1.3/FIL/JOIN/session={}/token={}/worker={}",
 					   session_id, worker_token, worker_id);
 }
@@ -1275,12 +1269,12 @@ struct parallel_receive_plan {
 };
 
 struct parallel_receive_state {
-		std::mutex mutex;
+		std::mutex                      mutex;
 		std::unordered_set<size_t>      seen_ids;
 		std::unordered_set<std::string> seen_paths;
-		std::size_t processed_entries  = 0;
-		std::size_t completed_entries  = 0;
-		std::size_t rejected_entries   = 0;
+		std::size_t                     processed_entries = 0;
+		std::size_t                     completed_entries = 0;
+		std::size_t                     rejected_entries  = 0;
 };
 
 enum class parallel_entry_registration {
@@ -1291,8 +1285,9 @@ enum class parallel_entry_registration {
 
 inline kotcpp::Result<uint16_t>
 open_parallel_worker_listener(kotcpp::tcp_socket& listener,
-							  int backlog = SOMAXCONN) {
-	kotcpp::Error last = kotcpp::make_sft_error("Fail to open worker listener.");
+							  int                 backlog = SOMAXCONN) {
+	kotcpp::Error last =
+		kotcpp::make_sft_error("Fail to open worker listener.");
 	for (int attempt = 0; attempt < 32; ++attempt) {
 		kotcpp::tcp_socket candidate;
 		auto ret = candidate.listen(kotcpp::generate_random_port(), backlog);
@@ -1313,20 +1308,21 @@ inline sockaddr_in make_worker_peer_addr(sockaddr_in peer_addr,
 	return peer_addr;
 }
 
-inline bool has_parallel_identity_paths(
-	const parallel_transfer_options& options) {
+inline bool
+has_parallel_identity_paths(const parallel_transfer_options& options) {
 	return !options.sec_path.empty() && !options.pub_path.empty() &&
 		   !options.hosts_path.empty();
 }
 
-inline bool initialize_parallel_worker(kotcpp::sft_client& worker,
-									   const parallel_transfer_options& options) {
+inline bool
+initialize_parallel_worker(kotcpp::sft_client&              worker,
+						   const parallel_transfer_options& options) {
 	if (!has_parallel_identity_paths(options)) {
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
 	}
-	auto ret =
-		worker.initialize(options.sec_path, options.pub_path, options.hosts_path);
+	auto ret = worker.initialize(options.sec_path, options.pub_path,
+								 options.hosts_path);
 	if (!ret) {
 		kotcpp::print_error("Fail to initialize parallel client", ret);
 		return false;
@@ -1334,14 +1330,15 @@ inline bool initialize_parallel_worker(kotcpp::sft_client& worker,
 	return true;
 }
 
-inline bool initialize_parallel_worker(kotcpp::sft_server& worker,
-									   const parallel_transfer_options& options) {
+inline bool
+initialize_parallel_worker(kotcpp::sft_server&              worker,
+						   const parallel_transfer_options& options) {
 	if (!has_parallel_identity_paths(options)) {
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
 	}
-	auto ret =
-		worker.initialize(options.sec_path, options.pub_path, options.hosts_path);
+	auto ret = worker.initialize(options.sec_path, options.pub_path,
+								 options.hosts_path);
 	if (!ret) {
 		kotcpp::print_error("Fail to initialize parallel server", ret);
 		return false;
@@ -1349,10 +1346,10 @@ inline bool initialize_parallel_worker(kotcpp::sft_server& worker,
 	return true;
 }
 
-inline bool accept_parallel_worker(kotcpp::sft_server& worker,
-								   kotcpp::tcp_socket& listener,
+inline bool accept_parallel_worker(kotcpp::sft_server&              worker,
+								   kotcpp::tcp_socket&              listener,
 								   const parallel_transfer_options& options,
-								   const std::atomic_bool& cancelled) {
+								   const std::atomic_bool&          cancelled) {
 	if (!initialize_parallel_worker(worker, options)) {
 		return false;
 	}
@@ -1370,14 +1367,14 @@ inline bool accept_parallel_worker(kotcpp::sft_server& worker,
 	return false;
 }
 
-inline bool connect_parallel_worker(kotcpp::sft_client& worker,
+inline bool connect_parallel_worker(kotcpp::sft_client&              worker,
 									const parallel_transfer_options& options,
 									uint16_t worker_port) {
 	if (!initialize_parallel_worker(worker, options)) {
 		return false;
 	}
-	auto ret = worker.connect(make_worker_peer_addr(options.peer_addr,
-												   worker_port));
+	auto ret =
+		worker.connect(make_worker_peer_addr(options.peer_addr, worker_port));
 	if (!ret) {
 		kotcpp::print_error("Parallel worker connect failed", ret);
 		return false;
@@ -1441,9 +1438,9 @@ parse_parallel_range(const sft12_frame& frame) {
 }
 
 inline bool wait_for_parallel_futures(std::vector<std::future<bool>>& futures,
-									  std::atomic_bool& cancelled,
-									  kotcpp::tcp_socket& listener,
-									  std::string_view context) {
+									  std::atomic_bool&               cancelled,
+									  kotcpp::tcp_socket&             listener,
+									  std::string_view                context) {
 	std::vector<bool> completed(futures.size(), false);
 	std::size_t       remaining = futures.size();
 	bool              all_ok    = true;
@@ -1476,11 +1473,11 @@ inline bool wait_for_parallel_futures(std::vector<std::future<bool>>& futures,
 
 template <kotcpp::AsyncTransferTarget Target>
 bool stream_file_to_target(Target& target, kotcpp::File& file,
-						   std::string_view file_path,
+						   std::string_view           file_path,
 						   transfer_pipeline_context& pipeline_context) {
-	const auto file_size        = static_cast<kotcpp::SizeType>(file.size());
-	const auto chunk_capacity   = transfer_chunk_size;
-	kotcpp::SizeType bytes_sent = 0;
+	const auto       file_size = static_cast<kotcpp::SizeType>(file.size());
+	const auto       chunk_capacity = transfer_chunk_size;
+	kotcpp::SizeType bytes_sent     = 0;
 	kotcpp::progress_bar_with_speed(0, file_size, true);
 
 	if (file_size == 0) {
@@ -1491,30 +1488,30 @@ bool stream_file_to_target(Target& target, kotcpp::File& file,
 	auto& pipeline = pipeline_context.pipeline;
 	pipeline.reset();
 	const std::string path(file_path);
-	auto reader = pipeline_context.io_pool.submit_task([&]() -> bool {
-		kotcpp::SizeType bytes_read = 0;
-		while (bytes_read < file_size) {
-			auto buffer = pipeline.acquire_free();
-			if (buffer == nullptr) {
-				return false;
-			}
+	auto reader      = pipeline_context.io_pool.submit_task([&]() -> bool {
+        kotcpp::SizeType bytes_read = 0;
+        while (bytes_read < file_size) {
+            auto buffer = pipeline.acquire_free();
+            if (buffer == nullptr) {
+                return false;
+            }
 
-			const auto chunk_size =
-				std::min(chunk_capacity, file_size - bytes_read);
-			if (!read_file_exact(file, buffer->data.data(), chunk_size, path)) {
-				pipeline.cancel();
-				return false;
-			}
+            const auto chunk_size =
+                std::min(chunk_capacity, file_size - bytes_read);
+            if (!read_file_exact(file, buffer->data.data(), chunk_size, path)) {
+                pipeline.cancel();
+                return false;
+            }
 
-			buffer->size = chunk_size;
-			bytes_read += chunk_size;
-			if (!pipeline.push_ready(std::move(buffer))) {
-				return false;
-			}
-		}
-		pipeline.close_ready();
-		return true;
-	});
+            buffer->size = chunk_size;
+            bytes_read += chunk_size;
+            if (!pipeline.push_ready(std::move(buffer))) {
+                return false;
+            }
+        }
+        pipeline.close_ready();
+        return true;
+    });
 
 	bool transfer_ok = true;
 	while (auto buffer = pipeline.pop_ready()) {
@@ -1553,9 +1550,9 @@ get_file_permissions_or_unknown(const std::unique_ptr<kotcpp::File>& file) {
 
 template <kotcpp::AsyncTransferTarget Target>
 bool stream_file_range_to_target(Target& target, kotcpp::File& file,
-								 std::string_view   file_path,
-								 kotcpp::SizeType   offset,
-								 kotcpp::SizeType   length,
+								 std::string_view           file_path,
+								 kotcpp::SizeType           offset,
+								 kotcpp::SizeType           length,
 								 transfer_pipeline_context& pipeline_context) {
 	const auto file_size = static_cast<kotcpp::SizeType>(file.size());
 	if (offset < 0 || length < 0 || offset > file_size ||
@@ -1564,8 +1561,8 @@ bool stream_file_range_to_target(Target& target, kotcpp::File& file,
 		return false;
 	}
 
-	const auto chunk_capacity   = transfer_chunk_size;
-	kotcpp::SizeType bytes_sent = 0;
+	const auto       chunk_capacity = transfer_chunk_size;
+	kotcpp::SizeType bytes_sent     = 0;
 	kotcpp::progress_bar_with_speed(offset, file_size, true);
 
 	if (length == 0) {
@@ -1576,31 +1573,31 @@ bool stream_file_range_to_target(Target& target, kotcpp::File& file,
 	auto& pipeline = pipeline_context.pipeline;
 	pipeline.reset();
 	const std::string path(file_path);
-	auto reader = pipeline_context.io_pool.submit_task([&]() -> bool {
-		kotcpp::SizeType bytes_read = 0;
-		while (bytes_read < length) {
-			auto buffer = pipeline.acquire_free();
-			if (buffer == nullptr) {
-				return false;
-			}
+	auto reader      = pipeline_context.io_pool.submit_task([&]() -> bool {
+        kotcpp::SizeType bytes_read = 0;
+        while (bytes_read < length) {
+            auto buffer = pipeline.acquire_free();
+            if (buffer == nullptr) {
+                return false;
+            }
 
-			const auto chunk_size =
-				std::min(chunk_capacity, length - bytes_read);
-			if (!read_file_at_exact(file, buffer->data.data(), chunk_size,
-									offset + bytes_read, path)) {
-				pipeline.cancel();
-				return false;
-			}
+            const auto chunk_size =
+                std::min(chunk_capacity, length - bytes_read);
+            if (!read_file_at_exact(file, buffer->data.data(), chunk_size,
+										 offset + bytes_read, path)) {
+                pipeline.cancel();
+                return false;
+            }
 
-			buffer->size = chunk_size;
-			bytes_read += chunk_size;
-			if (!pipeline.push_ready(std::move(buffer))) {
-				return false;
-			}
-		}
-		pipeline.close_ready();
-		return true;
-	});
+            buffer->size = chunk_size;
+            bytes_read += chunk_size;
+            if (!pipeline.push_ready(std::move(buffer))) {
+                return false;
+            }
+        }
+        pipeline.close_ready();
+        return true;
+    });
 
 	bool transfer_ok = true;
 	while (auto buffer = pipeline.pop_ready()) {
@@ -1658,7 +1655,7 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 		return false;
 	}
 
-	const auto chunk_capacity = transfer_chunk_size;
+	const auto       chunk_capacity = transfer_chunk_size;
 	kotcpp::SizeType bytes_received = 0;
 	kotcpp::progress_bar_with_speed(offset, total_size, true);
 
@@ -1670,24 +1667,24 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 	auto& pipeline = pipeline_context.pipeline;
 	pipeline.reset();
 	const std::string path(file_path);
-	auto writer = pipeline_context.io_pool.submit_task([&]() -> bool {
-		while (auto buffer = pipeline.pop_ready()) {
-			if (!write_file_at_exact(output_file, buffer->data.data(),
-									 buffer->size, buffer->offset, path)) {
-				pipeline.cancel();
-				return false;
-			}
-			if (auto state_res =
-					store_resume_state(state_path, buffer->offset + buffer->size);
-				!state_res) {
-				kotcpp::print_error("Fail to update resume state", state_res);
-				pipeline.cancel();
-				return false;
-			}
-			pipeline.release_free(std::move(buffer));
-		}
-		return true;
-	});
+	auto writer      = pipeline_context.io_pool.submit_task([&]() -> bool {
+        while (auto buffer = pipeline.pop_ready()) {
+            if (!write_file_at_exact(output_file, buffer->data.data(),
+										  buffer->size, buffer->offset, path)) {
+                pipeline.cancel();
+                return false;
+            }
+            if (auto state_res = store_resume_state(
+                    state_path, buffer->offset + buffer->size);
+                !state_res) {
+                kotcpp::print_error("Fail to update resume state", state_res);
+                pipeline.cancel();
+                return false;
+            }
+            pipeline.release_free(std::move(buffer));
+        }
+        return true;
+    });
 
 	bool transfer_ok = true;
 	while (bytes_received < length) {
@@ -1699,9 +1696,9 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 
 		const auto chunk_size =
 			std::min(chunk_capacity, length - bytes_received);
-		buffer->size         = chunk_size;
-		buffer->offset       = offset + bytes_received;
-		auto read_task       = target.read(buffer->data.data(), chunk_size);
+		buffer->size   = chunk_size;
+		buffer->offset = offset + bytes_received;
+		auto read_task = target.read(buffer->data.data(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, total_size, bytes_received,
 				std::format("Error while trying to receive from peer: {}",
@@ -1731,10 +1728,10 @@ bool stream_target_range_to_file(Target& target, kotcpp::File& output_file,
 
 template <kotcpp::AsyncTransferTarget Target>
 bool stream_target_to_file(Target& target, kotcpp::File& output_file,
-						   std::string_view   file_path,
-						   kotcpp::SizeType file_size,
+						   std::string_view           file_path,
+						   kotcpp::SizeType           file_size,
 						   transfer_pipeline_context& pipeline_context) {
-	const auto chunk_capacity = transfer_chunk_size;
+	const auto       chunk_capacity = transfer_chunk_size;
 	kotcpp::SizeType bytes_received = 0;
 	kotcpp::progress_bar_with_speed(0, file_size, true);
 
@@ -1746,17 +1743,17 @@ bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 	auto& pipeline = pipeline_context.pipeline;
 	pipeline.reset();
 	const std::string path(file_path);
-	auto writer = pipeline_context.io_pool.submit_task([&]() -> bool {
-		while (auto buffer = pipeline.pop_ready()) {
-			if (!write_file_exact(output_file, buffer->data.data(),
-								  buffer->size, path)) {
-				pipeline.cancel();
-				return false;
-			}
-			pipeline.release_free(std::move(buffer));
-		}
-		return true;
-	});
+	auto writer      = pipeline_context.io_pool.submit_task([&]() -> bool {
+        while (auto buffer = pipeline.pop_ready()) {
+            if (!write_file_exact(output_file, buffer->data.data(),
+									   buffer->size, path)) {
+                pipeline.cancel();
+                return false;
+            }
+            pipeline.release_free(std::move(buffer));
+        }
+        return true;
+    });
 
 	bool transfer_ok = true;
 	while (bytes_received < file_size) {
@@ -1768,7 +1765,7 @@ bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 
 		const auto chunk_size =
 			std::min(chunk_capacity, file_size - bytes_received);
-		buffer->size  = chunk_size;
+		buffer->size   = chunk_size;
 		auto read_task = target.read(buffer->data.data(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, file_size, bytes_received,
@@ -1823,6 +1820,7 @@ bool receive_control_code(Target& target, char expected_code) {
 	return true;
 }
 
+template <bool IsSFT11 = false>
 inline kotcpp::Result<std::filesystem::path>
 resolve_output_path(const std::filesystem::path& output_root,
 					std::string_view             remote_path) {
@@ -1833,9 +1831,11 @@ resolve_output_path(const std::filesystem::path& output_root,
 
 	std::string normalized_path(remote_path);
 #ifdef __unix__
-	for (auto& c : normalized_path) {
-		if (c == '\\') {
-			c = '/';
+	if constexpr (IsSFT11) {
+		for (auto& c : normalized_path) {
+			if (c == '\\') {
+				c = '/';
+			}
 		}
 	}
 #endif
@@ -1862,10 +1862,9 @@ resolve_output_path(const std::filesystem::path& output_root,
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-bool transfer_parallel_sender_tasks(Target& target,
-									const std::vector<parallel_send_task>& tasks,
-									std::atomic_size_t& next_task,
-									std::size_t worker_id) {
+bool transfer_parallel_sender_tasks(
+	Target& target, const std::vector<parallel_send_task>& tasks,
+	std::atomic_size_t& next_task, std::size_t worker_id) {
 	auto pipeline_context = transfer_pipeline_context();
 	while (true) {
 		const auto task_index = next_task.fetch_add(1);
@@ -1873,11 +1872,12 @@ bool transfer_parallel_sender_tasks(Target& target,
 			break;
 		}
 
-		const auto& task = tasks[task_index];
+		const auto& task  = tasks[task_index];
 		const auto& entry = task.entry;
-		if (!write_control_frame(
-				target, build_sft13_req(task.id, entry.remote_path, entry.size,
-									   entry.is_directory, entry.permissions))) {
+		if (!write_control_frame(target,
+								 build_sft13_req(task.id, entry.remote_path,
+												 entry.size, entry.is_directory,
+												 entry.permissions))) {
 			return false;
 		}
 
@@ -1927,10 +1927,9 @@ bool transfer_parallel_sender_tasks(Target& target,
 			const auto current_size =
 				get_file_size_as_size_type(entry.local_path);
 			if (!current_size) {
-				kotcpp::print_error(
-					std::format("Cannot read file size: {}",
-								entry.local_path.string()),
-					current_size);
+				kotcpp::print_error(std::format("Cannot read file size: {}",
+												entry.local_path.string()),
+									current_size);
 				return false;
 			}
 			if (*current_size != entry.size) {
@@ -1944,18 +1943,17 @@ bool transfer_parallel_sender_tasks(Target& target,
 			kotcpp::File file(entry.local_path);
 			auto         open_res = file.open_read_only();
 			if (!open_res) {
-				kotcpp::print_error(
-					std::format("Cannot open file: {}",
-								entry.local_path.string()),
-					open_res);
+				kotcpp::print_error(std::format("Cannot open file: {}",
+												entry.local_path.string()),
+									open_res);
 				return false;
 			}
 
-			std::cout << std::format("Worker {} sending file: {}\n",
-									 worker_id, entry.remote_path);
-			if (!stream_file_range_to_target(
-					target, file, entry.remote_path, offset, length,
-					pipeline_context)) {
+			std::cout << std::format("Worker {} sending file: {}\n", worker_id,
+									 entry.remote_path);
+			if (!stream_file_range_to_target(target, file, entry.remote_path,
+											 offset, length,
+											 pipeline_context)) {
 				return false;
 			}
 			std::cout << '\n';
@@ -1970,7 +1968,7 @@ bool transfer_parallel_sender_tasks(Target& target,
 			kotcpp::print_error("Fail to receive parallel file OK", ok_text);
 			return false;
 		}
-		auto ok = parse_sft13_frame(*ok_text);
+		auto ok    = parse_sft13_frame(*ok_text);
 		auto ok_id = ok ? parse_sft12_id_field(*ok, "OK")
 						: kotcpp::Result<size_t>(tl::unexpected(ok.error()));
 		if (!ok || ok->action != frame_action::Ok || !ok_id ||
@@ -1983,8 +1981,9 @@ bool transfer_parallel_sender_tasks(Target& target,
 	return write_control_frame(target, build_sft13_worker_done(worker_id));
 }
 
-inline parallel_entry_registration register_parallel_receive_entry(
-	parallel_receive_state& state, const transfer_request_entry_v12& entry) {
+inline parallel_entry_registration
+register_parallel_receive_entry(parallel_receive_state&           state,
+								const transfer_request_entry_v12& entry) {
 	std::lock_guard lock(state.mutex);
 	if (!state.seen_ids.emplace(entry.id).second) {
 		return parallel_entry_registration::DuplicateId;
@@ -2008,7 +2007,7 @@ inline void mark_parallel_receive_completed(parallel_receive_state& state) {
 }
 
 inline bool complete_parallel_receive_plan(parallel_receive_plan& plan,
-										   kotcpp::File& output_file) {
+										   kotcpp::File&          output_file) {
 	if (auto resize_res =
 			output_file.resize(static_cast<std::uintmax_t>(plan.entry.size));
 		!resize_res) {
@@ -2048,10 +2047,10 @@ bool receive_parallel_fin(Target& target, size_t entry_id,
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-bool receive_parallel_worker_tasks(Target& target,
-								   parallel_receive_state& receive_state,
+bool receive_parallel_worker_tasks(Target&                      target,
+								   parallel_receive_state&      receive_state,
 								   const std::filesystem::path& output_root,
-								   std::size_t worker_id) {
+								   std::size_t                  worker_id) {
 	auto pipeline_context = transfer_pipeline_context();
 	while (true) {
 		auto request_text = read_control_frame(target);
@@ -2062,8 +2061,7 @@ bool receive_parallel_worker_tasks(Target& target,
 		}
 		auto request = parse_sft13_frame(*request_text);
 		if (!request) {
-			kotcpp::print_error("Fail to parse parallel worker frame",
-								request);
+			kotcpp::print_error("Fail to parse parallel worker frame", request);
 			return false;
 		}
 		if (request->action == frame_action::Done) {
@@ -2076,32 +2074,30 @@ bool receive_parallel_worker_tasks(Target& target,
 
 		auto entry = parse_sft12_req(*request);
 		if (!entry) {
-			kotcpp::print_error("Fail to parse parallel worker request",
-								entry);
+			kotcpp::print_error("Fail to parse parallel worker request", entry);
 			return false;
 		}
 
 		auto reject_current = [&](std::string_view reason) {
 			mark_parallel_receive_rejected(receive_state);
-			return write_control_frame(
-				target, build_sft13_rej(entry->id, reason));
+			return write_control_frame(target,
+									   build_sft13_rej(entry->id, reason));
 		};
 
 		switch (register_parallel_receive_entry(receive_state, *entry)) {
-			case parallel_entry_registration::Accepted:
-				break;
-			case parallel_entry_registration::DuplicateId:
-				std::cerr << "Receive duplicate parallel file id.\n";
+		case parallel_entry_registration::Accepted:
+			break;
+		case parallel_entry_registration::DuplicateId:
+			std::cerr << "Receive duplicate parallel file id.\n";
+			return false;
+		case parallel_entry_registration::DuplicatePath:
+			if (!reject_current("Duplicate parallel output path.")) {
 				return false;
-			case parallel_entry_registration::DuplicatePath:
-				if (!reject_current("Duplicate parallel output path.")) {
-					return false;
-				}
-				continue;
+			}
+			continue;
 		}
 
-		auto output_path =
-			resolve_output_path(output_root, entry->path);
+		auto output_path = resolve_output_path(output_root, entry->path);
 		if (!output_path) {
 			kotcpp::print_error("Reject output path from peer", output_path);
 			if (!reject_current(output_path.error().message())) {
@@ -2130,7 +2126,8 @@ bool receive_parallel_worker_tasks(Target& target,
 				kotcpp::File directory(*output_path);
 				(void)directory.set_permissions(entry->permissions);
 			}
-			if (!write_control_frame(target, build_sft13_ack(entry->id, 0, 0)) ||
+			if (!write_control_frame(target,
+									 build_sft13_ack(entry->id, 0, 0)) ||
 				!receive_parallel_fin(target, entry->id, 0)) {
 				return false;
 			}
@@ -2186,8 +2183,8 @@ bool receive_parallel_worker_tasks(Target& target,
 		else {
 			offset = 0;
 		}
-		offset            = sanitize_resume_offset(offset, entry->size);
-		const auto length = entry->size - offset;
+		offset              = sanitize_resume_offset(offset, entry->size);
+		const auto   length = entry->size - offset;
 
 		kotcpp::File output_file(*output_path);
 		if (auto open_res = output_file.open_random_access(
@@ -2205,12 +2202,10 @@ bool receive_parallel_worker_tasks(Target& target,
 			return false;
 		}
 		std::cout << std::format("Worker {} receiving file: {}\tSize: {}\n",
-								 worker_id, output_path->string(),
-								 entry->size);
-		if (length > 0 &&
-			!stream_target_range_to_file(
-				target, output_file, entry->path, offset, length, entry->size,
-				*state_path, pipeline_context)) {
+								 worker_id, output_path->string(), entry->size);
+		if (length > 0 && !stream_target_range_to_file(
+							  target, output_file, entry->path, offset, length,
+							  entry->size, *state_path, pipeline_context)) {
 			return false;
 		}
 		std::cout << '\n';
@@ -2236,8 +2231,9 @@ bool receive_parallel_worker_tasks(Target& target,
 	}
 }
 
-inline bool all_parallel_receive_entries_processed(
-	parallel_receive_state& receive_state, std::size_t expected_entries) {
+inline bool
+all_parallel_receive_entries_processed(parallel_receive_state& receive_state,
+									   std::size_t expected_entries) {
 	std::lock_guard lock(receive_state.mutex);
 	return receive_state.seen_ids.size() == expected_entries &&
 		   receive_state.processed_entries == expected_entries;
@@ -2250,7 +2246,7 @@ bool send_file_v11(
 	Target& target,
 	const std::vector<std::tuple<std::unique_ptr<kotcpp::File>, std::string>>&
 		files) {
-	const auto request = sft_detail::build_file_request(files);
+	const auto request          = sft_detail::build_file_request(files);
 	auto       pipeline_context = sft_detail::transfer_pipeline_context();
 
 	target.set_blocking();
@@ -2297,7 +2293,7 @@ void receive_file_v11(Target& target, std::string_view first_request) {
 		return;
 	}
 
-	auto scratch = std::vector<Byte>(sft_detail::transfer_chunk_size);
+	auto scratch          = std::vector<Byte>(sft_detail::transfer_chunk_size);
 	auto pipeline_context = sft_detail::transfer_pipeline_context();
 	if (!sft_detail::send_control_code(target, '1')) {
 		return;
@@ -2306,7 +2302,7 @@ void receive_file_v11(Target& target, std::string_view first_request) {
 	const auto output_root = std::filesystem::current_path();
 	for (const auto& entry : *entries) {
 		auto output_path =
-			sft_detail::resolve_output_path(output_root, entry.path);
+			sft_detail::resolve_output_path<true>(output_root, entry.path);
 		if (!output_path) {
 			kotcpp::print_error("Reject output path from peer", output_path);
 			if (!sft_detail::drain_target_bytes(target, entry.size, scratch,
@@ -2364,9 +2360,9 @@ void receive_file_v11(Target& target, std::string_view first_request) {
 			continue;
 		}
 
-		if (!sft_detail::stream_target_to_file(
-				target, file_output_stream, entry.path, entry.size,
-				pipeline_context)) {
+		if (!sft_detail::stream_target_to_file(target, file_output_stream,
+											   entry.path, entry.size,
+											   pipeline_context)) {
 			return;
 		}
 		std::cout << '\n';
@@ -2522,10 +2518,10 @@ bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 template <kotcpp::AsyncTransferTarget Target>
 void receive_file_v12(Target& target, std::string_view first_frame) {
 	std::string current_frame(first_frame);
-	const auto  output_root = std::filesystem::current_path();
+	const auto  output_root      = std::filesystem::current_path();
 	auto        pipeline_context = sft_detail::transfer_pipeline_context();
 
-	auto        read_next_frame = [&]() -> bool {
+	auto        read_next_frame  = [&]() -> bool {
         auto next_frame = sft_detail::read_control_frame(target);
         if (!next_frame) {
             kotcpp::print_error("Fail to receive sft1.2 frame", next_frame);
@@ -2780,14 +2776,13 @@ bool send_file_v13_parallel(
 		tasks.push_back({file_id, entries[file_id]});
 	}
 
-	const auto proposed_workers =
-		sft_detail::get_default_parallel_worker_count(tasks.size(),
-													  options.max_workers);
+	const auto proposed_workers = sft_detail::get_default_parallel_worker_count(
+		tasks.size(), options.max_workers);
 
-	kotcpp::tcp_socket worker_listener;
+	kotcpp::tcp_socket      worker_listener;
 	std::optional<uint16_t> local_worker_port;
-	std::string session_id;
-	std::string worker_token;
+	std::string             session_id;
+	std::string             worker_token;
 	if (options.worker_endpoint ==
 			sft_detail::parallel_worker_endpoint::Listener &&
 		proposed_workers > 0) {
@@ -2803,10 +2798,9 @@ bool send_file_v13_parallel(
 
 	target.set_blocking();
 	if (!sft_detail::write_control_frame(
-			target,
-			sft_detail::build_sft13_hello(
-				proposed_workers, tasks.size(), tasks.size(),
-				local_worker_port, session_id, worker_token))) {
+			target, sft_detail::build_sft13_hello(
+						proposed_workers, tasks.size(), tasks.size(),
+						local_worker_port, session_id, worker_token))) {
 		return false;
 	}
 
@@ -2820,14 +2814,15 @@ bool send_file_v13_parallel(
 		std::cerr << "Receive unexpected sft1.3 READY.\n";
 		return false;
 	}
-	auto accepted_workers_res = sft_detail::get_size_t_option(*ready, "workers");
+	auto accepted_workers_res =
+		sft_detail::get_size_t_option(*ready, "workers");
 	if (!accepted_workers_res || *accepted_workers_res > proposed_workers) {
 		std::cerr << "Receive invalid sft1.3 worker count.\n";
 		return false;
 	}
-	auto accepted_workers = *accepted_workers_res;
+	auto     accepted_workers = *accepted_workers_res;
 
-	uint16_t worker_port = local_worker_port.value_or(0);
+	uint16_t worker_port      = local_worker_port.value_or(0);
 	if (options.worker_endpoint ==
 			sft_detail::parallel_worker_endpoint::Connector &&
 		accepted_workers > 0) {
@@ -2853,9 +2848,9 @@ bool send_file_v13_parallel(
 	}
 
 	if (actual_workers > 0) {
-		BS::light_thread_pool pool(actual_workers);
-		std::atomic_size_t    next_task{0};
-		std::atomic_bool      cancelled{false};
+		BS::light_thread_pool          pool(actual_workers);
+		std::atomic_size_t             next_task{0};
+		std::atomic_bool               cancelled{false};
 		std::vector<std::future<bool>> futures;
 		futures.reserve(actual_workers);
 
@@ -2869,8 +2864,8 @@ bool send_file_v13_parallel(
 							worker, worker_listener, options, cancelled)) {
 						return false;
 					}
-					if (!sft_detail::receive_parallel_join(
-							worker, session_id, worker_token)) {
+					if (!sft_detail::receive_parallel_join(worker, session_id,
+														   worker_token)) {
 						return false;
 					}
 					return sft_detail::transfer_parallel_sender_tasks(
@@ -2882,8 +2877,8 @@ bool send_file_v13_parallel(
 														 worker_port)) {
 					return false;
 				}
-				if (!sft_detail::send_parallel_join(
-						worker, session_id, worker_token, worker_id)) {
+				if (!sft_detail::send_parallel_join(worker, session_id,
+													worker_token, worker_id)) {
 					return false;
 				}
 				return sft_detail::transfer_parallel_sender_tasks(
@@ -2892,16 +2887,16 @@ bool send_file_v13_parallel(
 		}
 
 		const auto workers_ok = sft_detail::wait_for_parallel_futures(
-			futures, cancelled, worker_listener, "Parallel sender worker failed");
+			futures, cancelled, worker_listener,
+			"Parallel sender worker failed");
 		worker_listener.close();
 		if (!workers_ok) {
 			return false;
 		}
 	}
 
-	if (!sft_detail::write_control_frame(target,
-										 sft_detail::build_sft13_done(
-											 tasks.size()))) {
+	if (!sft_detail::write_control_frame(
+			target, sft_detail::build_sft13_done(tasks.size()))) {
 		return false;
 	}
 	auto done_ok_text = sft_detail::read_control_frame(target);
@@ -2939,17 +2934,16 @@ void receive_file_v13_parallel(
 		return;
 	}
 
-	const auto local_workers =
-		sft_detail::get_default_parallel_worker_count(*payload_files_res,
-													  options.max_workers);
+	const auto local_workers = sft_detail::get_default_parallel_worker_count(
+		*payload_files_res, options.max_workers);
 	const auto accepted_workers =
 		std::min(*proposed_workers_res, local_workers);
 
-	kotcpp::tcp_socket worker_listener;
+	kotcpp::tcp_socket      worker_listener;
 	std::optional<uint16_t> local_worker_port;
-	uint16_t worker_port = 0;
-	std::string session_id;
-	std::string worker_token;
+	uint16_t                worker_port = 0;
+	std::string             session_id;
+	std::string             worker_token;
 	if (options.worker_endpoint ==
 			sft_detail::parallel_worker_endpoint::Listener &&
 		accepted_workers > 0) {
@@ -2989,16 +2983,15 @@ void receive_file_v13_parallel(
 	const auto output_root = std::filesystem::current_path();
 	sft_detail::parallel_receive_state receive_state;
 
-	const auto actual_workers =
-		std::min(accepted_workers, *entry_count_res);
+	const auto actual_workers = std::min(accepted_workers, *entry_count_res);
 	if (*entry_count_res > 0 && actual_workers == 0) {
 		std::cerr << "Parallel transfer has tasks but no worker.\n";
 		return;
 	}
 
 	if (actual_workers > 0) {
-		BS::light_thread_pool pool(actual_workers);
-		std::atomic_bool      cancelled{false};
+		BS::light_thread_pool          pool(actual_workers);
+		std::atomic_bool               cancelled{false};
 		std::vector<std::future<bool>> futures;
 		futures.reserve(actual_workers);
 
@@ -3012,8 +3005,8 @@ void receive_file_v13_parallel(
 							worker, worker_listener, options, cancelled)) {
 						return false;
 					}
-					if (!sft_detail::receive_parallel_join(
-							worker, session_id, worker_token)) {
+					if (!sft_detail::receive_parallel_join(worker, session_id,
+														   worker_token)) {
 						return false;
 					}
 					return sft_detail::receive_parallel_worker_tasks(
@@ -3025,8 +3018,8 @@ void receive_file_v13_parallel(
 														 worker_port)) {
 					return false;
 				}
-				if (!sft_detail::send_parallel_join(
-						worker, session_id, worker_token, worker_id)) {
+				if (!sft_detail::send_parallel_join(worker, session_id,
+													worker_token, worker_id)) {
 					return false;
 				}
 				return sft_detail::receive_parallel_worker_tasks(
@@ -3055,8 +3048,8 @@ void receive_file_v13_parallel(
 	}
 	auto done_count = sft_detail::get_size_t_option(*done, "count");
 	if (!done_count || *done_count != *entry_count_res ||
-		!sft_detail::all_parallel_receive_entries_processed(
-			receive_state, *done_count)) {
+		!sft_detail::all_parallel_receive_entries_processed(receive_state,
+															*done_count)) {
 		std::cerr << "Receive incomplete sft1.3 transfer.\n";
 		return;
 	}
@@ -3079,7 +3072,7 @@ bool send_file(
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file(Target& target,
+void receive_file(Target&                                      target,
 				  const sft_detail::parallel_transfer_options& options) {
 	target.set_blocking();
 	auto first_frame = sft_detail::read_control_frame(target);
@@ -3095,8 +3088,7 @@ void receive_file(Target& target,
 	if (sft_detail::is_sft13_frame(*first_frame)) {
 		receive_file_v13_parallel(target, *first_frame, options);
 	}
-	else
-	if (sft_detail::is_sft12_frame(*first_frame)) {
+	else if (sft_detail::is_sft12_frame(*first_frame)) {
 		receive_file_v12(target, *first_frame);
 	}
 	else {
