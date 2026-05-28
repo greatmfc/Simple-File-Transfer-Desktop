@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 项目配置
 project(Simple-File-Transfer-Desktop
-    VERSION 2.3
+    VERSION 2.4
     DESCRIPTION "Simple File Transfer Desktop Application"
     LANGUAGES CXX
 )

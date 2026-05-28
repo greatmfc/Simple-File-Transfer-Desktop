@@ -179,14 +179,22 @@ class sft_identity {
 			return {};
 		}
 
-		std::unique_ptr<SessionBase> create_client_session() const {
+		std::unique_ptr<SessionBase> create_client_session(
+			const SecureAeadAlgorithmList& algorithms =
+				default_secure_aead_algorithms(),
+			bool require_aead_negotiation = false) const {
 			ScopedReadAccess r(_sec);
-			return std::make_unique<ClientSession>(_pub, _sec.data());
+			return std::make_unique<ClientSession>(
+				_pub, _sec.data(), algorithms, require_aead_negotiation);
 		}
 
-		std::unique_ptr<SessionBase> create_server_session() const {
+		std::unique_ptr<SessionBase> create_server_session(
+			const SecureAeadAlgorithmList& algorithms =
+				default_secure_aead_algorithms(),
+			bool require_aead_negotiation = false) const {
 			ScopedReadAccess r(_sec);
-			return std::make_unique<ServerSession>(_pub, _sec.data());
+			return std::make_unique<ServerSession>(
+				_pub, _sec.data(), algorithms, require_aead_negotiation);
 		}
 
 		std::string fingerprint() const {
@@ -333,7 +341,8 @@ class secure_channel : public io_overloads<secure_channel> {
 			}
 
 			SizeType bytesWritten = 0, bytesLeft = ciphertext.size(),
-					 lastWritten = EncryptionAdditionalBytes;
+					 lastWritten = static_cast<SizeType>(
+						 _session->encryption_additional_bytes());
 			while (bytesLeft > 0) {
 				ret = _conn.write(ciphertext.data() + bytesWritten, bytesLeft);
 				[[likely]] if (!ret) {
@@ -385,7 +394,9 @@ class secure_channel : public io_overloads<secure_channel> {
 			}
 
 			frameSize = _session->decrypt_frame_length(encryptedFrameSize);
-			if (frameSize > nbytes + EncryptionAdditionalBytes ||
+			const auto encryption_overhead = static_cast<SizeType>(
+				_session->encryption_additional_bytes());
+			if (frameSize > nbytes + encryption_overhead ||
 				frameSize == 0) {
 				co_return tl::unexpected(channel_error(std::format(
 					"Incoming secure frame size {} does not fit destination buffer {}.",
@@ -393,7 +404,7 @@ class secure_channel : public io_overloads<secure_channel> {
 			}
 
 			std::vector<uint8_t> ciphertext(frameSize);
-			SizeType bytesRead = 0, lastRead = EncryptionAdditionalBytes;
+			SizeType bytesRead = 0, lastRead = encryption_overhead;
 			while (bytesRead < frameSize) {
 				auto ret = _conn.read(ciphertext.data() + bytesRead,
 									  frameSize - bytesRead);
@@ -445,18 +456,32 @@ class secure_channel : public io_overloads<secure_channel> {
 
 class sft_client : public io_overloads<sft_client> {
 	private:
-		sft_identity      _identity;
-		known_hosts_store _known_hosts;
-		secure_channel    _channel;
+		sft_identity           _identity;
+		known_hosts_store      _known_hosts;
+		secure_channel         _channel;
+		SecureAeadAlgorithmList _aead_algorithms =
+			default_secure_aead_algorithms();
+		bool                   _require_aead_negotiation = false;
 
 		void reset_session() {
-			_channel.set_session(_identity.create_client_session());
+			_channel.set_session(_identity.create_client_session(
+				_aead_algorithms, _require_aead_negotiation));
 		}
 
 	public:
 		using IoResult = secure_channel::IoResult;
 		using io_overloads<sft_client>::read;
 		using io_overloads<sft_client>::write;
+
+		void set_supported_encryption_algorithms(
+			SecureAeadAlgorithmList algorithms) {
+			_aead_algorithms =
+				normalize_secure_aead_algorithms(std::move(algorithms));
+		}
+
+		void require_encryption_algorithm_negotiation(bool required = true) {
+			_require_aead_negotiation = required;
+		}
 
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
@@ -513,12 +538,20 @@ class sft_client : public io_overloads<sft_client> {
 			if (!ret) {
 				return ret;
 			}
-			auto buf_size = generate_random_port(128, 1024);
+			std::size_t               buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf;
 			randombytes_buf(buf.data(), buf_size);
 			auto hello_msg1 = session.step1_generate_hello();
+			if (hello_msg1.size() > buf.size()) {
+				conn.close();
+				return tl::unexpected(make_sft_error(
+					"Secure client handshake hello is too large."));
+			}
+			buf_size = std::max(buf_size, hello_msg1.size());
 			std::ranges::copy(hello_msg1, buf.begin());
-			if (auto write_res = conn.write(buf.data(), buf_size); !write_res) {
+			if (auto write_res =
+					conn.write(buf.data(), static_cast<SizeType>(buf_size));
+				!write_res) {
 				conn.close();
 				return write_res;
 			}
@@ -540,8 +573,16 @@ class sft_client : public io_overloads<sft_client> {
 			std::vector<uint8_t> client_response = std::move(res.value());
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);
+			if (client_response.size() > buf.size()) {
+				conn.close();
+				return tl::unexpected(make_sft_error(
+					"Secure client handshake response is too large."));
+			}
+			buf_size = std::max(buf_size, client_response.size());
 			std::ranges::copy(client_response, buf.begin());
-			if (auto write_res = conn.write(buf.data(), buf_size); !write_res) {
+			if (auto write_res =
+					conn.write(buf.data(), static_cast<SizeType>(buf_size));
+				!write_res) {
 				conn.close();
 				return write_res;
 			}
@@ -551,7 +592,10 @@ class sft_client : public io_overloads<sft_client> {
 			}
 			std::vector<uint8_t> last_ok;
 			if (auto decrypt_res =
-					session.decrypt(buf.data(), 1 + EncryptionAdditionalBytes);
+					session.decrypt(
+						buf.data(),
+						static_cast<SizeType>(
+							1 + session.encryption_additional_bytes()));
 				!decrypt_res) {
 				conn.close();
 				return tl::unexpected(make_sft_error(std::format(
@@ -589,18 +633,32 @@ class sft_client : public io_overloads<sft_client> {
 
 class sft_server : public io_overloads<sft_server> {
 	private:
-		sft_identity      _identity;
-		known_hosts_store _known_hosts;
-		secure_channel    _channel;
+		sft_identity           _identity;
+		known_hosts_store      _known_hosts;
+		secure_channel         _channel;
+		SecureAeadAlgorithmList _aead_algorithms =
+			default_secure_aead_algorithms();
+		bool                   _require_aead_negotiation = false;
 
 		void reset_session() {
-			_channel.set_session(_identity.create_server_session());
+			_channel.set_session(_identity.create_server_session(
+				_aead_algorithms, _require_aead_negotiation));
 		}
 
 	public:
 		using IoResult = secure_channel::IoResult;
 		using io_overloads<sft_server>::read;
 		using io_overloads<sft_server>::write;
+
+		void set_supported_encryption_algorithms(
+			SecureAeadAlgorithmList algorithms) {
+			_aead_algorithms =
+				normalize_secure_aead_algorithms(std::move(algorithms));
+		}
+
+		void require_encryption_algorithm_negotiation(bool required = true) {
+			_require_aead_negotiation = required;
+		}
 
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
@@ -653,7 +711,7 @@ class sft_server : public io_overloads<sft_server> {
 			_channel.attach_socket(std::move(*accept_res));
 			auto& conn = _channel.socket();
 			auto& session = _channel.session();
-			auto buf_size = generate_random_port(128, 1024);
+			std::size_t               buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf{};
 			conn.set_blocking();
 			auto ret = conn.read(buf);
@@ -667,9 +725,15 @@ class sft_server : public io_overloads<sft_server> {
 					server_response.error().message())));
 			}
 			randombytes_buf(buf.data(), buf_size);
+			if (server_response->size() > buf.size()) {
+				conn.close();
+				return tl::unexpected(make_sft_error(
+					"Secure server handshake response is too large."));
+			}
+			buf_size = std::max(buf_size, server_response->size());
 			std::copy(server_response->begin(), server_response->end(),
 					  buf.begin());
-			ret = conn.write(buf.data(), buf_size);
+				ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
 			if (!ret) {
 				return ret;
 			}
@@ -697,8 +761,14 @@ class sft_server : public io_overloads<sft_server> {
 			}
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);
+			if (ok_msg->size() > buf.size()) {
+				conn.close();
+				return tl::unexpected(make_sft_error(
+					"Secure server handshake acknowledgement is too large."));
+			}
+			buf_size = std::max(buf_size, ok_msg->size());
 			std::copy(ok_msg->begin(), ok_msg->end(), buf.begin());
-			ret = conn.write(buf.data(), buf_size);
+				ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
 			if (!ret) {
 				return ret;
 			}

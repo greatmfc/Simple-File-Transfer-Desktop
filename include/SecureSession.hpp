@@ -2,11 +2,20 @@
 #define SECURE_SESSION_HPP
 
 #include "ErrorResult.h"
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <format>
 #include <functional>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <sodium.h>
+#include <span>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <array>
 
@@ -16,13 +25,13 @@ constexpr auto ServerToClientResponseLength =
 	crypto_kx_PUBLICKEYBYTES + crypto_sign_PUBLICKEYBYTES + crypto_sign_BYTES;
 constexpr auto EncryptionAdditionalBytes =
 	crypto_aead_xchacha20poly1305_ietf_ABYTES;
+constexpr auto MaxEncryptionAdditionalBytes = crypto_aead_aegis256_ABYTES;
+constexpr auto ClientAuthPlaintextBytes =
+	crypto_sign_PUBLICKEYBYTES + crypto_sign_BYTES;
 constexpr auto ClientToServerResponseLength =
-	crypto_kx_PUBLICKEYBYTES + crypto_sign_BYTES + EncryptionAdditionalBytes;
+	ClientAuthPlaintextBytes + EncryptionAdditionalBytes;
 constexpr auto NonceBytes = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES;
-inline auto    EncryptionFunction =
-	std::function(crypto_aead_xchacha20poly1305_ietf_encrypt);
-inline auto DecryptionFunction =
-	std::function(crypto_aead_xchacha20poly1305_ietf_decrypt);
+constexpr auto MaxNonceBytes = crypto_aead_aegis256_NPUBBYTES;
 
 using PubKeyArray = std::array<uint8_t, SessionPubkeyBytes>;
 using SecKeyArray = std::array<uint8_t, SessionSeckeyBytes>;
@@ -44,6 +53,241 @@ inline std::string get_fingerprint(const uint8_t* public_key, size_t len) {
 					  sodium_base64_VARIANT_ORIGINAL);
 
 	return std::string(b64);
+}
+
+enum class SecureAeadAlgorithm : uint8_t {
+	XChaCha20Poly1305 = 1,
+	Aegis256          = 2,
+};
+
+using SecureAeadAlgorithmList = std::vector<SecureAeadAlgorithm>;
+
+using SecureAeadEncryptFn = int (*)(unsigned char*, unsigned long long*,
+									const unsigned char*, unsigned long long,
+									const unsigned char*, unsigned long long,
+									const unsigned char*, const unsigned char*,
+									const unsigned char*);
+
+using SecureAeadDecryptFn = int (*)(unsigned char*, unsigned long long*,
+									unsigned char*, const unsigned char*,
+									unsigned long long, const unsigned char*,
+									unsigned long long, const unsigned char*,
+									const unsigned char*);
+
+struct SecureAeadDescriptor {
+		SecureAeadAlgorithm algorithm;
+		std::string_view    name;
+		std::size_t         nonce_bytes;
+		std::size_t         additional_bytes;
+		SecureAeadEncryptFn encrypt;
+		SecureAeadDecryptFn decrypt;
+};
+
+inline const SecureAeadDescriptor&
+secure_aead_descriptor(SecureAeadAlgorithm algorithm) {
+	static constexpr SecureAeadDescriptor xchacha{
+		.algorithm        = SecureAeadAlgorithm::XChaCha20Poly1305,
+		.name             = "xchacha20-poly1305",
+		.nonce_bytes      = crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
+		.additional_bytes = crypto_aead_xchacha20poly1305_ietf_ABYTES,
+		.encrypt          = crypto_aead_xchacha20poly1305_ietf_encrypt,
+		.decrypt          = crypto_aead_xchacha20poly1305_ietf_decrypt,
+	};
+	static constexpr SecureAeadDescriptor aegis{
+		.algorithm        = SecureAeadAlgorithm::Aegis256,
+		.name             = "aegis256",
+		.nonce_bytes      = crypto_aead_aegis256_NPUBBYTES,
+		.additional_bytes = crypto_aead_aegis256_ABYTES,
+		.encrypt          = crypto_aead_aegis256_encrypt,
+		.decrypt          = crypto_aead_aegis256_decrypt,
+	};
+
+	switch (algorithm) {
+	case SecureAeadAlgorithm::Aegis256:
+		return aegis;
+	case SecureAeadAlgorithm::XChaCha20Poly1305:
+	default:
+		return xchacha;
+	}
+}
+
+inline bool is_known_secure_aead_algorithm(SecureAeadAlgorithm algorithm) {
+	switch (algorithm) {
+	case SecureAeadAlgorithm::XChaCha20Poly1305:
+	case SecureAeadAlgorithm::Aegis256:
+		return true;
+	default:
+		return false;
+	}
+}
+
+inline std::string_view
+secure_aead_algorithm_name(SecureAeadAlgorithm algorithm) {
+	return secure_aead_descriptor(algorithm).name;
+}
+
+inline Result<SecureAeadAlgorithm>
+parse_secure_aead_algorithm(std::string_view name) {
+	if (name == "aegis256" || name == "AEGIS256") {
+		return SecureAeadAlgorithm::Aegis256;
+	}
+	if (name == "xchacha20-poly1305" || name == "xchacha20poly1305" ||
+		name == "XChaCha20-Poly1305") {
+		return SecureAeadAlgorithm::XChaCha20Poly1305;
+	}
+	return tl::unexpected(make_sft_error(
+		std::format("Unsupported secure channel AEAD algorithm: {}", name)));
+}
+
+inline SecureAeadAlgorithmList default_secure_aead_algorithms() {
+	return {SecureAeadAlgorithm::Aegis256,
+			SecureAeadAlgorithm::XChaCha20Poly1305};
+}
+
+inline SecureAeadAlgorithmList normalize_secure_aead_algorithms(
+	SecureAeadAlgorithmList algorithms) {
+	SecureAeadAlgorithmList normalized;
+	normalized.reserve(algorithms.size());
+	for (auto algorithm : algorithms) {
+		if (!is_known_secure_aead_algorithm(algorithm)) {
+			continue;
+		}
+		if (std::ranges::find(normalized, algorithm) == normalized.end()) {
+			normalized.push_back(algorithm);
+		}
+	}
+	if (normalized.empty()) {
+		normalized.push_back(SecureAeadAlgorithm::XChaCha20Poly1305);
+	}
+	return normalized;
+}
+
+inline bool secure_aead_list_contains(const SecureAeadAlgorithmList& algorithms,
+									  SecureAeadAlgorithm algorithm) {
+	return std::ranges::find(algorithms, algorithm) != algorithms.end();
+}
+
+inline std::optional<SecureAeadAlgorithm> choose_secure_aead_algorithm(
+	const SecureAeadAlgorithmList& local_preference,
+	const SecureAeadAlgorithmList& peer_supported) {
+	for (auto algorithm : local_preference) {
+		if (secure_aead_list_contains(peer_supported, algorithm)) {
+			return algorithm;
+		}
+	}
+	return std::nullopt;
+}
+
+inline constexpr std::array<uint8_t, 8> AeadNegotiationMagic{
+	'S', 'F', 'T', 'A', 'E', 'A', 'D', '1'};
+inline constexpr uint8_t AeadOfferExtensionType     = 1;
+inline constexpr uint8_t AeadSelectedExtensionType  = 2;
+inline constexpr size_t  AeadExtensionHeaderBytes   = 10;
+inline constexpr size_t  ClientHelloFixedBytes      = crypto_kx_PUBLICKEYBYTES;
+inline constexpr size_t  ServerResponseFixedBytes   =
+	ServerToClientResponseLength;
+
+inline std::vector<uint8_t> build_aead_extension(
+	uint8_t type, const std::vector<uint8_t>& payload) {
+	std::vector<uint8_t> extension;
+	extension.reserve(AeadExtensionHeaderBytes + payload.size());
+	extension.insert(extension.end(), AeadNegotiationMagic.begin(),
+					 AeadNegotiationMagic.end());
+	extension.push_back(type);
+	extension.push_back(static_cast<uint8_t>(payload.size()));
+	extension.insert(extension.end(), payload.begin(), payload.end());
+	return extension;
+}
+
+inline std::vector<uint8_t> build_aead_offer_extension(
+	const SecureAeadAlgorithmList& algorithms) {
+	std::vector<uint8_t> payload;
+	payload.reserve(algorithms.size());
+	for (auto algorithm : algorithms) {
+		payload.push_back(static_cast<uint8_t>(algorithm));
+	}
+	return build_aead_extension(AeadOfferExtensionType, payload);
+}
+
+inline std::vector<uint8_t>
+build_aead_selected_extension(SecureAeadAlgorithm algorithm) {
+	return build_aead_extension(AeadSelectedExtensionType,
+								{static_cast<uint8_t>(algorithm)});
+}
+
+inline Result<std::optional<std::vector<uint8_t>>> read_aead_extension_bytes(
+	const uint8_t* packet, size_t len, size_t offset, uint8_t expected_type) {
+	if (len < offset + AeadExtensionHeaderBytes) {
+		return std::nullopt;
+	}
+	const uint8_t* extension = packet + offset;
+	if (!std::ranges::equal(AeadNegotiationMagic,
+							std::span(extension,
+									  AeadNegotiationMagic.size()))) {
+		return std::nullopt;
+	}
+	if (extension[8] != expected_type) {
+		return tl::unexpected(
+			make_sft_error("Receive unsupported AEAD negotiation extension."));
+	}
+
+	const auto payload_size = static_cast<size_t>(extension[9]);
+	const auto total_size   = AeadExtensionHeaderBytes + payload_size;
+	if (payload_size == 0 || len < offset + total_size) {
+		return tl::unexpected(
+			make_sft_error("Receive malformed AEAD negotiation extension."));
+	}
+
+	return std::vector<uint8_t>(extension, extension + total_size);
+}
+
+inline Result<SecureAeadAlgorithmList>
+parse_aead_offer_extension(const std::vector<uint8_t>& extension) {
+	if (extension.size() < AeadExtensionHeaderBytes ||
+		extension[8] != AeadOfferExtensionType) {
+		return tl::unexpected(
+			make_sft_error("Receive malformed AEAD offer extension."));
+	}
+
+	const auto payload_size = static_cast<size_t>(extension[9]);
+	if (extension.size() != AeadExtensionHeaderBytes + payload_size ||
+		payload_size == 0) {
+		return tl::unexpected(
+			make_sft_error("Receive malformed AEAD offer extension."));
+	}
+
+	SecureAeadAlgorithmList algorithms;
+	algorithms.reserve(payload_size);
+	for (size_t i = 0; i < payload_size; ++i) {
+		auto algorithm = static_cast<SecureAeadAlgorithm>(
+			extension[AeadExtensionHeaderBytes + i]);
+		if (is_known_secure_aead_algorithm(algorithm) &&
+			!secure_aead_list_contains(algorithms, algorithm)) {
+			algorithms.push_back(algorithm);
+		}
+	}
+	if (algorithms.empty()) {
+		return tl::unexpected(
+			make_sft_error("AEAD offer contains no supported algorithms."));
+	}
+	return algorithms;
+}
+
+inline Result<SecureAeadAlgorithm>
+parse_aead_selected_extension(const std::vector<uint8_t>& extension) {
+	if (extension.size() != AeadExtensionHeaderBytes + 1 ||
+		extension[8] != AeadSelectedExtensionType || extension[9] != 1) {
+		return tl::unexpected(
+			make_sft_error("Receive malformed AEAD selected extension."));
+	}
+
+	auto algorithm =
+		static_cast<SecureAeadAlgorithm>(extension[AeadExtensionHeaderBytes]);
+	if (!is_known_secure_aead_algorithm(algorithm)) {
+		return tl::unexpected(
+			make_sft_error("Peer selected an unsupported AEAD algorithm."));
+	}
+	return algorithm;
 }
 
 // ============================================================================
@@ -147,10 +391,9 @@ class SessionBase {
 		std::unique_ptr<SecureKey>                  rx_key_;
 		std::unique_ptr<SecureKey>                  tx_key_;
 
-		// Nonce (24 字节 for XChaCha20)
-		// 策略：前 16 字节为从握手材料派生的随机前缀，后 8 字节为递增计数器
-		uint8_t                                     nonce_tx_[NonceBytes] = {0};
-		uint8_t                                     nonce_rx_[NonceBytes] = {0};
+		// Nonce: 前缀来自握手材料，末尾 8 字节为递增计数器。
+		std::array<uint8_t, MaxNonceBytes>          nonce_tx_{};
+		std::array<uint8_t, MaxNonceBytes>          nonce_rx_{};
 
 		// 帧长度加密密钥和计数器 (发送/接收分别使用不同密钥)
 		std::array<uint8_t, crypto_stream_KEYBYTES> tx_length_key_{};
@@ -166,13 +409,68 @@ class SessionBase {
 		std::unique_ptr<SecureKey> ephemeral_sk_;
 		std::vector<uint8_t>       ephemeral_pk_;
 
+		SecureAeadAlgorithmList    supported_aead_algorithms_ =
+			default_secure_aead_algorithms();
+		SecureAeadAlgorithm        aead_algorithm_ =
+			SecureAeadAlgorithm::XChaCha20Poly1305;
+		std::vector<uint8_t>       client_aead_extension_;
+		std::vector<uint8_t>       server_aead_extension_;
+		bool                       require_aead_negotiation_ = false;
+		bool                       aead_negotiated_          = false;
 		bool                       is_ready_ = false; // 是否握手完成
+
+		SessionBase() = default;
+
+		SessionBase(SecureAeadAlgorithmList supported_aead_algorithms,
+					bool require_aead_negotiation)
+			: supported_aead_algorithms_(normalize_secure_aead_algorithms(
+				  std::move(supported_aead_algorithms))),
+			  require_aead_negotiation_(require_aead_negotiation) {
+		}
+
+		const SecureAeadDescriptor& aead_descriptor() const {
+			return secure_aead_descriptor(aead_algorithm_);
+		}
+
+		void set_aead_algorithm(SecureAeadAlgorithm algorithm) {
+			aead_algorithm_ = algorithm;
+		}
+
+		size_t client_auth_ciphertext_bytes() const {
+			return ClientAuthPlaintextBytes + encryption_additional_bytes();
+		}
+
+		void append_aead_transcript(std::vector<uint8_t>& data) const {
+			if (!aead_negotiated_) {
+				return;
+			}
+			data.insert(data.end(), client_aead_extension_.begin(),
+						client_aead_extension_.end());
+			data.insert(data.end(), server_aead_extension_.begin(),
+						server_aead_extension_.end());
+		}
 
 	public:
 		virtual ~SessionBase() = default;
 
 		bool is_established() const {
 			return is_ready_;
+		}
+
+		SecureAeadAlgorithm encryption_algorithm() const {
+			return aead_algorithm_;
+		}
+
+		std::string_view encryption_algorithm_name() const {
+			return secure_aead_algorithm_name(aead_algorithm_);
+		}
+
+		size_t encryption_nonce_bytes() const {
+			return aead_descriptor().nonce_bytes;
+		}
+
+		size_t encryption_additional_bytes() const {
+			return aead_descriptor().additional_bytes;
 		}
 
 		virtual std::vector<uint8_t> step1_generate_hello() {
@@ -184,17 +482,17 @@ class SessionBase {
 			throw std::runtime_error("Invalid function call from base.");
 		}
 
-		virtual Result<std::vector<uint8_t>> step2_handle_response(
-			const uint8_t* /*server_msg*/, size_t /*len*/,
-			std::function<bool(const std::string&)> check_pubkey) {
-			throw std::runtime_error("Invalid function call from base.");
-		}
+			virtual Result<std::vector<uint8_t>> step2_handle_response(
+				const uint8_t* /*server_msg*/, size_t /*len*/,
+				std::function<bool(const std::string&)> /*check_pubkey*/) {
+				throw std::runtime_error("Invalid function call from base.");
+			}
 
-		virtual Result<std::vector<uint8_t>> step2_handle_auth(
-			const uint8_t* /*encrypted_auth*/, size_t /*len*/,
-			std::function<bool(const std::string&)> check_pubkey) {
-			throw std::runtime_error("Invalid function call from base.");
-		}
+			virtual Result<std::vector<uint8_t>> step2_handle_auth(
+				const uint8_t* /*encrypted_auth*/, size_t /*len*/,
+				std::function<bool(const std::string&)> /*check_pubkey*/) {
+				throw std::runtime_error("Invalid function call from base.");
+			}
 
 		template <buffer_type T> auto step1_handle_hello(const T& client_msg) {
 			return this->step1_handle_hello(client_msg.data(),
@@ -217,56 +515,78 @@ class SessionBase {
 										   encrypted_auth.size(), check_pubkey);
 		}
 
-		// This function assumes output_pt has at least MESSAGE_LEN +
-		// EncryptionAdditionalBytes space.
-		// Returns the length of the ciphertext.
-		Result<SizeType> encrypt(const uint8_t* plaintext,
-								 SizeType plaintextLen, uint8_t* output_pt) {
-			if (!is_ready_) {
-				return tl::unexpected("Handshake not completed");
-			}
+		// This function assumes output_pt has at least MESSAGE_LEN plus the
+		// negotiated AEAD overhead.
+			// Returns the length of the ciphertext.
+			Result<SizeType> encrypt(const uint8_t* plaintext,
+									 SizeType plaintextLen, uint8_t* output_pt) {
+				if (!is_ready_) {
+					return tl::unexpected("Handshake not completed");
+				}
+				if (plaintextLen < 0) {
+					return tl::unexpected("Plaintext length cannot be negative");
+				}
 
-			unsigned long long clen;
+				unsigned long long clen;
 
-			{
-				ScopedReadAccess access(*tx_key_);
+				{
+					ScopedReadAccess access(*tx_key_);
 
-				EncryptionFunction(output_pt, &clen, plaintext, plaintextLen,
-								   nullptr,
-								   0,       // No AD
-								   nullptr, // No Secret Nonce
-								   nonce_tx_, tx_key_->data());
-			}
+					const auto& aead = aead_descriptor();
+					if (aead.encrypt(
+							output_pt, &clen, plaintext,
+							static_cast<unsigned long long>(plaintextLen), nullptr,
+							0,       // No AD
+							nullptr, // No Secret Nonce
+							nonce_tx_.data(), tx_key_->data()) != 0) {
+						return tl::unexpected("Encryption failed");
+					}
+				}
 
 			// Increment Nonce TX
-			sodium_increment(nonce_tx_, NonceBytes);
+			sodium_increment(nonce_tx_.data(), encryption_nonce_bytes());
 
 			return clen;
 		}
 
-		Result<std::vector<uint8_t>> encrypt(const uint8_t* plaintext,
-											 SizeType       plaintextLen) {
-			std::vector<uint8_t> ciphertext(plaintextLen +
-											EncryptionAdditionalBytes);
-			if (auto res =
-					this->encrypt(plaintext, plaintextLen, ciphertext.data());
-				!res) {
-				return tl::unexpected(res.error());
+			Result<std::vector<uint8_t>> encrypt(const uint8_t* plaintext,
+												 SizeType       plaintextLen) {
+				if (plaintextLen < 0) {
+					return tl::unexpected("Plaintext length cannot be negative");
+				}
+				std::vector<uint8_t> ciphertext(
+					static_cast<std::size_t>(plaintextLen) +
+					encryption_additional_bytes());
+				if (auto res =
+						this->encrypt(plaintext, plaintextLen, ciphertext.data());
+					!res) {
+					return tl::unexpected(res.error());
+				}
+				return ciphertext;
 			}
-			return ciphertext;
-		}
 
-		template <buffer_type T> auto encrypt(const T& plaintext) {
-			return this->encrypt(plaintext.data(), plaintext.size());
-		}
+			template <buffer_type T> auto encrypt(const T& plaintext) {
+				if (plaintext.size() >
+					static_cast<std::size_t>(
+						std::numeric_limits<SizeType>::max())) {
+					return Result<std::vector<uint8_t>>(
+						tl::unexpected("Plaintext length is too large"));
+				}
+				return this->encrypt(
+					plaintext.data(), static_cast<SizeType>(plaintext.size()));
+			}
 
 		Result<SizeType> decrypt(const uint8_t* ciphertext,
 								 SizeType ciphertextLen, uint8_t* output_pt) {
-			if (!is_ready_) {
-				return tl::unexpected("Handshake not completed");
-			}
-			if (ciphertextLen < EncryptionAdditionalBytes) {
-				return tl::unexpected("Ciphertext too short");
+				if (!is_ready_) {
+					return tl::unexpected("Handshake not completed");
+				}
+				if (ciphertextLen < 0) {
+					return tl::unexpected("Ciphertext length cannot be negative");
+				}
+				if (ciphertextLen <
+					static_cast<SizeType>(encryption_additional_bytes())) {
+					return tl::unexpected("Ciphertext too short");
 			}
 
 			unsigned long long mlen;
@@ -274,23 +594,33 @@ class SessionBase {
 			{
 				ScopedReadAccess access(*rx_key_);
 
-				if ((DecryptionFunction(output_pt, &mlen, nullptr, ciphertext,
-										ciphertextLen, nullptr, 0, nonce_rx_,
-										rx_key_->data()) != 0)) {
-					return tl::unexpected(
-						"Decryption failed: Tag mismatch (Tampering detected)");
-				}
+					const auto& aead = aead_descriptor();
+					if ((aead.decrypt(output_pt, &mlen, nullptr, ciphertext,
+									  static_cast<unsigned long long>(
+										  ciphertextLen),
+									  nullptr, 0, nonce_rx_.data(),
+									  rx_key_->data()) != 0)) {
+						return tl::unexpected(
+							"Decryption failed: Tag mismatch (Tampering detected)");
+					}
 			}
 
-			sodium_increment(nonce_rx_, NonceBytes);
+			sodium_increment(nonce_rx_.data(), encryption_nonce_bytes());
 
 			return mlen;
 		}
 
-		Result<std::vector<uint8_t>> decrypt(const uint8_t* ciphertext,
-											 SizeType       ciphertextLen) {
-			std::vector<uint8_t> plaintext(ciphertextLen -
-										   EncryptionAdditionalBytes);
+			Result<std::vector<uint8_t>> decrypt(const uint8_t* ciphertext,
+												 SizeType       ciphertextLen) {
+				if (ciphertextLen < 0) {
+					return tl::unexpected("Ciphertext length cannot be negative");
+				}
+				const auto overhead = encryption_additional_bytes();
+				if (ciphertextLen < static_cast<SizeType>(overhead)) {
+					return tl::unexpected("Ciphertext too short");
+				}
+				std::vector<uint8_t> plaintext(
+					static_cast<std::size_t>(ciphertextLen) - overhead);
 
 			if (auto res =
 					this->decrypt(ciphertext, ciphertextLen, plaintext.data());
@@ -300,9 +630,16 @@ class SessionBase {
 			return plaintext;
 		}
 
-		template <buffer_type T> auto decrypt(const T& ciphertext) {
-			return this->decrypt(ciphertext.data(), ciphertext.size());
-		}
+			template <buffer_type T> auto decrypt(const T& ciphertext) {
+				if (ciphertext.size() >
+					static_cast<std::size_t>(
+						std::numeric_limits<SizeType>::max())) {
+					return Result<std::vector<uint8_t>>(
+						tl::unexpected("Ciphertext length is too large"));
+				}
+				return this->decrypt(
+					ciphertext.data(), static_cast<SizeType>(ciphertext.size()));
+			}
 
 		void init_nonce(const uint8_t* client_eph_pk,
 						const uint8_t* server_eph_pk, bool is_client) {
@@ -311,21 +648,39 @@ class SessionBase {
 			memcpy(key_material + crypto_kx_PUBLICKEYBYTES, server_eph_pk,
 				   crypto_kx_PUBLICKEYBYTES);
 
-			uint8_t hash[32];
-			crypto_generichash(hash, 32, key_material, sizeof(key_material),
-							   nullptr, 0);
-
-			if (is_client) {
-				memcpy(nonce_tx_, hash, 16);
-				memcpy(nonce_rx_, hash + 16, 16);
+			const auto nonce_bytes  = encryption_nonce_bytes();
+			const auto prefix_bytes = nonce_bytes - sizeof(uint64_t);
+			if (nonce_bytes == NonceBytes) {
+				uint8_t hash[32];
+				crypto_generichash(hash, sizeof(hash), key_material,
+								   sizeof(key_material), nullptr, 0);
+				if (is_client) {
+					memcpy(nonce_tx_.data(), hash, prefix_bytes);
+					memcpy(nonce_rx_.data(), hash + 16, prefix_bytes);
+				}
+				else {
+					memcpy(nonce_tx_.data(), hash + 16, prefix_bytes);
+					memcpy(nonce_rx_.data(), hash, prefix_bytes);
+				}
+				sodium_memzero(hash, sizeof(hash));
 			}
 			else {
-				memcpy(nonce_tx_, hash + 16, 16);
-				memcpy(nonce_rx_, hash, 16);
+				uint8_t hash[crypto_generichash_BYTES_MAX];
+				crypto_generichash(hash, sizeof(hash), key_material,
+								   sizeof(key_material), nullptr, 0);
+				if (is_client) {
+					memcpy(nonce_tx_.data(), hash, prefix_bytes);
+					memcpy(nonce_rx_.data(), hash + 32, prefix_bytes);
+				}
+				else {
+					memcpy(nonce_tx_.data(), hash + 32, prefix_bytes);
+					memcpy(nonce_rx_.data(), hash, prefix_bytes);
+				}
+				sodium_memzero(hash, sizeof(hash));
 			}
 
-			memset(nonce_tx_ + 16, 0, 8);
-			memset(nonce_rx_ + 16, 0, 8);
+			memset(nonce_tx_.data() + prefix_bytes, 0, sizeof(uint64_t));
+			memset(nonce_rx_.data() + prefix_bytes, 0, sizeof(uint64_t));
 
 			uint8_t length_context[] = "SFT_LEN_";
 			{
@@ -343,7 +698,6 @@ class SessionBase {
 			length_counter_rx_ = 0;
 
 			sodium_memzero(key_material, sizeof(key_material));
-			sodium_memzero(hash, sizeof(hash));
 		}
 
 		uint64_t encrypt_frame_length(uint64_t plaintext_len) {
@@ -390,7 +744,12 @@ class SessionBase {
 class ClientSession : public SessionBase {
 	public:
 		ClientSession(const PubKeyArray& identity_pk,
-					  const SecKeyArray& identity_sk) {
+					  const SecKeyArray& identity_sk,
+					  SecureAeadAlgorithmList supported_aead_algorithms =
+						  default_secure_aead_algorithms(),
+					  bool require_aead_negotiation = false)
+			: SessionBase(std::move(supported_aead_algorithms),
+						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
 			ScopedWriteAccess w(identity_sk_); // 解锁写入
 			std::memcpy(identity_sk_.data(), identity_sk.data(),
@@ -398,7 +757,12 @@ class ClientSession : public SessionBase {
 		}
 
 		ClientSession(const PubKeyArray& identity_pk,
-					  const uint8_t*     identity_sk) {
+					  const uint8_t*     identity_sk,
+					  SecureAeadAlgorithmList supported_aead_algorithms =
+						  default_secure_aead_algorithms(),
+					  bool require_aead_negotiation = false)
+			: SessionBase(std::move(supported_aead_algorithms),
+						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
 			ScopedWriteAccess w(identity_sk_); // 解锁写入
 			std::memcpy(identity_sk_.data(), identity_sk, identity_sk_.size());
@@ -415,8 +779,13 @@ class ClientSession : public SessionBase {
 				crypto_kx_keypair(ephemeral_pk_.data(), ephemeral_sk_->data());
 			}
 
-			// 发送: [Client Ephemeral PK (32)]
-			return ephemeral_pk_;
+			// 发送: [Client Ephemeral PK (32)] + optional AEAD offer extension.
+			client_aead_extension_ =
+				build_aead_offer_extension(supported_aead_algorithms_);
+			std::vector<uint8_t> hello = ephemeral_pk_;
+			hello.insert(hello.end(), client_aead_extension_.begin(),
+						 client_aead_extension_.end());
+			return hello;
 		}
 
 		// --- Step 2: 处理 Server Response 并生成 Auth 包 ---
@@ -434,6 +803,43 @@ class ClientSession : public SessionBase {
 			const uint8_t* s_id_pk  = server_msg + crypto_kx_PUBLICKEYBYTES;
 			const uint8_t* s_sig    = s_id_pk + crypto_sign_PUBLICKEYBYTES;
 
+			auto selection_extension_res = read_aead_extension_bytes(
+				server_msg, len, ServerResponseFixedBytes,
+				AeadSelectedExtensionType);
+			if (!selection_extension_res) {
+				return tl::unexpected(selection_extension_res.error());
+			}
+			if (selection_extension_res->has_value()) {
+				server_aead_extension_ = std::move(**selection_extension_res);
+				auto selected =
+					parse_aead_selected_extension(server_aead_extension_);
+				if (!selected) {
+					return tl::unexpected(selected.error());
+				}
+				if (!secure_aead_list_contains(supported_aead_algorithms_,
+											   *selected)) {
+					return tl::unexpected(
+						"Peer selected an AEAD algorithm this side did not offer");
+				}
+				set_aead_algorithm(*selected);
+				aead_negotiated_ = true;
+			}
+			else {
+				if (require_aead_negotiation_) {
+					return tl::unexpected(
+						"Peer did not negotiate a secure channel AEAD algorithm");
+				}
+				if (!secure_aead_list_contains(
+						supported_aead_algorithms_,
+						SecureAeadAlgorithm::XChaCha20Poly1305)) {
+					return tl::unexpected(
+						"Legacy peer requires XChaCha20-Poly1305 support");
+				}
+				set_aead_algorithm(SecureAeadAlgorithm::XChaCha20Poly1305);
+				server_aead_extension_.clear();
+				aead_negotiated_ = false;
+			}
+
 			std::vector<uint8_t> yielded_pk(
 				server_msg + crypto_kx_PUBLICKEYBYTES,
 				server_msg + crypto_kx_PUBLICKEYBYTES +
@@ -449,6 +855,7 @@ class ClientSession : public SessionBase {
 							   ephemeral_pk_.end());
 			verify_data.insert(verify_data.end(), s_eph_pk,
 							   s_eph_pk + crypto_kx_PUBLICKEYBYTES);
+			append_aead_transcript(verify_data);
 
 			if (crypto_sign_verify_detached(s_sig, verify_data.data(),
 											verify_data.size(), s_id_pk) != 0) {
@@ -490,6 +897,7 @@ class ClientSession : public SessionBase {
 							 s_eph_pk + crypto_kx_PUBLICKEYBYTES);
 			sign_data.insert(sign_data.end(), ephemeral_pk_.begin(),
 							 ephemeral_pk_.end());
+			append_aead_transcript(sign_data);
 
 			std::vector<uint8_t> my_sig(crypto_sign_BYTES);
 			{
@@ -513,14 +921,24 @@ class ServerSession : public SessionBase {
 
 	public:
 		ServerSession(const PubKeyArray& identity_pk,
-					  const SecKeyArray& identity_sk) {
+					  const SecKeyArray& identity_sk,
+					  SecureAeadAlgorithmList supported_aead_algorithms =
+						  default_secure_aead_algorithms(),
+					  bool require_aead_negotiation = false)
+			: SessionBase(std::move(supported_aead_algorithms),
+						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
 			ScopedWriteAccess w(identity_sk_); // 解锁写入
 			std::memcpy(identity_sk_.data(), identity_sk.data(),
 						identity_sk.size());
 		}
 		ServerSession(const PubKeyArray& identity_pk,
-					  const uint8_t*     identity_sk) {
+					  const uint8_t*     identity_sk,
+					  SecureAeadAlgorithmList supported_aead_algorithms =
+						  default_secure_aead_algorithms(),
+					  bool require_aead_negotiation = false)
+			: SessionBase(std::move(supported_aead_algorithms),
+						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
 			ScopedWriteAccess w(identity_sk_); // 解锁写入
 			std::memcpy(identity_sk_.data(), identity_sk, identity_sk_.size());
@@ -536,6 +954,46 @@ class ServerSession : public SessionBase {
 			}
 			client_ephemeral_pk_cache_.assign(
 				client_msg, client_msg + crypto_kx_PUBLICKEYBYTES);
+
+			auto offer_extension_res = read_aead_extension_bytes(
+				client_msg, len, ClientHelloFixedBytes, AeadOfferExtensionType);
+			if (!offer_extension_res) {
+				return tl::unexpected(offer_extension_res.error());
+			}
+			if (offer_extension_res->has_value()) {
+				client_aead_extension_ = std::move(**offer_extension_res);
+				auto peer_algorithms =
+					parse_aead_offer_extension(client_aead_extension_);
+				if (!peer_algorithms) {
+					return tl::unexpected(peer_algorithms.error());
+				}
+				auto selected = choose_secure_aead_algorithm(
+					supported_aead_algorithms_, *peer_algorithms);
+				if (!selected) {
+					return tl::unexpected(
+						"No mutually supported secure channel AEAD algorithm");
+				}
+				set_aead_algorithm(*selected);
+				server_aead_extension_ =
+					build_aead_selected_extension(*selected);
+				aead_negotiated_ = true;
+			}
+			else {
+				if (require_aead_negotiation_) {
+					return tl::unexpected(
+						"Peer did not offer secure channel AEAD negotiation");
+				}
+				if (!secure_aead_list_contains(
+						supported_aead_algorithms_,
+						SecureAeadAlgorithm::XChaCha20Poly1305)) {
+					return tl::unexpected(
+						"Legacy peer requires XChaCha20-Poly1305 support");
+				}
+				set_aead_algorithm(SecureAeadAlgorithm::XChaCha20Poly1305);
+				client_aead_extension_.clear();
+				server_aead_extension_.clear();
+				aead_negotiated_ = false;
+			}
 
 			// 1. 生成 Server 临时密钥
 			ephemeral_sk_ =
@@ -575,15 +1033,17 @@ class ServerSession : public SessionBase {
 							 client_msg + crypto_kx_PUBLICKEYBYTES);
 			sign_data.insert(sign_data.end(), ephemeral_pk_.begin(),
 							 ephemeral_pk_.end());
+			append_aead_transcript(sign_data);
 
 			std::vector<uint8_t> sig(crypto_sign_BYTES);
 			{
 				ScopedReadAccess r_id(identity_sk_);
-				auto             a = *(identity_sk_.data() + 30);
 				crypto_sign_detached(sig.data(), nullptr, sign_data.data(),
 									 sign_data.size(), identity_sk_.data());
 			}
 			response.insert(response.end(), sig.begin(), sig.end());
+			response.insert(response.end(), server_aead_extension_.begin(),
+							server_aead_extension_.end());
 
 			// 此时我们有 Key 了，但握手还没完，还差客户端的鉴权
 			// 但我们不能置 is_ready_ = true，因为下一个包是鉴权包，逻辑不同
@@ -596,7 +1056,8 @@ class ServerSession : public SessionBase {
 		Result<std::vector<uint8_t>> step2_handle_auth(
 			const uint8_t* encrypted_auth, size_t len,
 			std::function<bool(const std::string&)> check_pubkey) override {
-			if (len < ClientToServerResponseLength) {
+			const auto expected_auth_len = client_auth_ciphertext_bytes();
+			if (len < expected_auth_len) {
 				return tl::unexpected("Invalid auth packet length");
 			}
 			// 临时开启解密能力 (为了解开 Auth 包)
@@ -606,7 +1067,8 @@ class ServerSession : public SessionBase {
 
 			std::vector<uint8_t> plaintext;
 			if (auto res =
-					decrypt(encrypted_auth, ClientToServerResponseLength);
+					decrypt(encrypted_auth,
+							static_cast<SizeType>(expected_auth_len));
 				!res) {
 				is_ready_ = false;
 				return tl::unexpected(res.error()); // 解密失败
@@ -641,6 +1103,7 @@ class ServerSession : public SessionBase {
 			verify_data.insert(verify_data.end(),
 							   client_ephemeral_pk_cache_.begin(),
 							   client_ephemeral_pk_cache_.end());
+			append_aead_transcript(verify_data);
 
 			if (crypto_sign_verify_detached(c_sig, verify_data.data(),
 											verify_data.size(), c_id_pk) != 0) {

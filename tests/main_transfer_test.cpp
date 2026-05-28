@@ -978,6 +978,109 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 			"removed resume state should load as empty");
 }
 
+struct TestIdentity {
+		PubKeyArray pub{};
+		SecKeyArray sec{};
+};
+
+TestIdentity make_test_identity() {
+	TestIdentity identity;
+	crypto_sign_keypair(identity.pub.data(), identity.sec.data());
+	return identity;
+}
+
+bool trust_any_test_key(const std::string&) {
+	return true;
+}
+
+void complete_secure_session_handshake(kotcpp::ClientSession& client,
+									   kotcpp::ServerSession& server) {
+	auto hello = client.step1_generate_hello();
+	require(hello.size() > kotcpp::ClientHelloFixedBytes,
+			"client hello should carry an AEAD offer extension");
+
+	auto server_response =
+		server.step1_handle_hello(hello.data(), hello.size());
+	require(server_response.has_value(),
+			"server failed to handle negotiated client hello");
+
+	auto client_auth =
+		client.step2_handle_response(server_response->data(),
+									 server_response->size(),
+									 trust_any_test_key);
+	require(client_auth.has_value(),
+			"client failed to handle negotiated server response");
+
+	auto server_auth =
+		server.step2_handle_auth(client_auth->data(), client_auth->size(),
+								 trust_any_test_key);
+	require(server_auth.has_value(),
+			"server failed to authenticate negotiated client response");
+	require(client.is_established() && server.is_established(),
+			"secure session handshake did not complete");
+}
+
+void test_secure_session_negotiates_aegis256() {
+	const auto client_identity = make_test_identity();
+	const auto server_identity = make_test_identity();
+
+	kotcpp::ClientSession client(client_identity.pub, client_identity.sec);
+	kotcpp::ServerSession server(server_identity.pub, server_identity.sec);
+
+	complete_secure_session_handshake(client, server);
+	require(client.encryption_algorithm() == kotcpp::SecureAeadAlgorithm::Aegis256,
+			"client should prefer AEGIS256 when both sides support it");
+	require(server.encryption_algorithm() == kotcpp::SecureAeadAlgorithm::Aegis256,
+			"server should select AEGIS256 when both sides support it");
+
+	const auto plaintext = to_bytes("AEGIS negotiated payload");
+	auto       encrypted = client.encrypt(plaintext);
+	require(encrypted.has_value(), "AEGIS encryption failed");
+	require(encrypted->size() ==
+				plaintext.size() + crypto_aead_aegis256_ABYTES,
+			"AEGIS ciphertext overhead is unexpected");
+
+	auto decrypted = server.decrypt(*encrypted);
+	require(decrypted.has_value() && *decrypted == plaintext,
+			"AEGIS encrypted payload did not decrypt correctly");
+}
+
+void test_secure_session_falls_back_to_xchacha() {
+	const auto client_identity = make_test_identity();
+	const auto server_identity = make_test_identity();
+
+	kotcpp::ClientSession client(
+		client_identity.pub, client_identity.sec,
+		{kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305});
+	kotcpp::ServerSession server(server_identity.pub, server_identity.sec);
+
+	complete_secure_session_handshake(client, server);
+	require(client.encryption_algorithm() ==
+				kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305,
+			"client should fall back to XChaCha20-Poly1305");
+	require(server.encryption_algorithm() ==
+				kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305,
+			"server should select XChaCha20-Poly1305 fallback");
+}
+
+void test_secure_session_rejects_no_common_aead() {
+	const auto client_identity = make_test_identity();
+	const auto server_identity = make_test_identity();
+
+	kotcpp::ClientSession client(
+		client_identity.pub, client_identity.sec,
+		{kotcpp::SecureAeadAlgorithm::Aegis256});
+	kotcpp::ServerSession server(
+		server_identity.pub, server_identity.sec,
+		{kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305});
+
+	auto hello = client.step1_generate_hello();
+	auto server_response =
+		server.step1_handle_hello(hello.data(), hello.size());
+	require(!server_response.has_value(),
+			"server should reject a client with no common AEAD algorithm");
+}
+
 } // namespace
 
 int main() {
@@ -1019,6 +1122,9 @@ int main() {
 		test_file_permission_helpers(temp_root);
 		test_transfer_encoding_helpers();
 		test_resume_state_helpers(temp_root);
+		test_secure_session_negotiates_aegis256();
+		test_secure_session_falls_back_to_xchacha();
+		test_secure_session_rejects_no_common_aead();
 		fs::remove_all(temp_root);
 		std::cout << "main_transfer_test passed\n";
 		return 0;
