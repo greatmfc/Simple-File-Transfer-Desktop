@@ -237,6 +237,9 @@ void receive_file_v13_parallel(
 
 	const auto output_root = std::filesystem::current_path();
 	sft_detail::parallel_receive_state receive_state;
+	auto print_receive_failures = [&]() {
+		sft_detail::print_parallel_receive_failures(receive_state);
+	};
 
 	const auto actual_workers = std::min(accepted_workers, *entry_count_res);
 	if (*entry_count_res > 0 && actual_workers == 0) {
@@ -289,6 +292,7 @@ void receive_file_v13_parallel(
 			"Parallel receiver worker failed", &progress);
 		worker_listener.close();
 		if (!workers_ok) {
+			print_receive_failures();
 			return;
 		}
 	}
@@ -296,11 +300,13 @@ void receive_file_v13_parallel(
 	auto done_text = sft_detail::read_control_frame(target);
 	if (!done_text) {
 		kotcpp::print_error("Fail to receive sft1.3 DONE", done_text);
+		print_receive_failures();
 		return;
 	}
 	auto done = sft_detail::parse_sft13_frame(*done_text);
 	if (!done || done->action != sft_detail::frame_action::Done) {
 		std::cerr << "Receive unexpected sft1.3 DONE.\n";
+		print_receive_failures();
 		return;
 	}
 	auto done_count = sft_detail::get_size_t_option(*done, "count");
@@ -308,8 +314,10 @@ void receive_file_v13_parallel(
 		!sft_detail::all_parallel_receive_entries_processed(receive_state,
 															*done_count)) {
 		std::cerr << "Receive incomplete sft1.3 transfer.\n";
+		print_receive_failures();
 		return;
 	}
 	(void)sft_detail::write_control_frame(target,
 										  sft_detail::build_sft13_ok_all());
+	print_receive_failures();
 }

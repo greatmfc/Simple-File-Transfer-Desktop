@@ -721,6 +721,42 @@ void test_parallel_receiver_worker_negotiates_task(const fs::path& temp_root) {
 			"parallel receiver worker generated an unexpected OK");
 }
 
+void test_parallel_receiver_worker_records_rejected_task(
+	const fs::path& temp_root) {
+	const fs::path output_dir = temp_root / "receive_parallel_reject";
+	fs::create_directories(output_dir);
+
+	const auto request = sft_detail::build_sft13_req(
+		5, "../blocked.txt", 0, false, fs::perms::unknown);
+	ScriptedTransferTarget target({
+		to_bytes(request),
+		to_bytes(sft_detail::build_sft13_worker_done(2)),
+	});
+	sft_detail::parallel_receive_state receive_state;
+
+	require(sft_detail::receive_parallel_worker_tasks(target, receive_state,
+													  output_dir, 2),
+			"parallel receiver worker reject task returned false");
+	require(
+		sft_detail::all_parallel_receive_entries_processed(receive_state, 1),
+		"parallel receiver worker did not account for rejected task");
+
+	auto failures = sft_detail::get_parallel_receive_failures(receive_state);
+	require(failures.size() == 1,
+			"parallel receiver worker should record one rejected task");
+	require(failures[0].id == 5 && failures[0].path == "../blocked.txt",
+			"parallel receiver worker recorded the wrong rejected task");
+	require(failures[0].reason == "Reject parent path traversal from peer.",
+			"parallel receiver worker recorded the wrong rejection reason");
+
+	const auto writes = writes_to_strings(target.writes());
+	require(writes.size() == 1,
+			"parallel receiver worker reject should only write REJ");
+	require(writes[0] == sft_detail::build_sft13_rej(
+							 5, "Reject parent path traversal from peer."),
+			"parallel receiver worker reject generated unexpected REJ");
+}
+
 void test_receive_file_v12_small(const fs::path& temp_root) {
 	const auto file_contents = to_bytes("hello v12 receive");
 	const auto request =
@@ -975,6 +1011,7 @@ int main() {
 		test_send_file_v12_reject_skip(temp_root);
 		test_parallel_sender_worker_negotiates_task(temp_root);
 		test_parallel_receiver_worker_negotiates_task(temp_root);
+		test_parallel_receiver_worker_records_rejected_task(temp_root);
 		test_receive_file_v12_small(temp_root);
 		test_receive_file_v12_resume(temp_root);
 		test_receive_file_v12_rejects_parent_traversal(temp_root);
