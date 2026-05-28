@@ -44,10 +44,17 @@ struct parallel_receive_plan {
 		bool                       completed   = false;
 };
 
+struct parallel_receive_failure {
+		size_t      id = 0;
+		std::string path;
+		std::string reason;
+};
+
 struct parallel_receive_state {
 		std::mutex                      mutex;
 		std::unordered_set<size_t>      seen_ids;
 		std::unordered_set<std::string> seen_paths;
+		std::vector<parallel_receive_failure> failures;
 		std::size_t                     processed_entries = 0;
 		std::size_t                     completed_entries = 0;
 		std::size_t                     rejected_entries  = 0;
@@ -388,8 +395,26 @@ register_parallel_receive_entry(parallel_receive_state&           state,
 	return parallel_entry_registration::Accepted;
 }
 
-inline void mark_parallel_receive_rejected(parallel_receive_state& state) {
+inline void record_parallel_receive_failure(
+	parallel_receive_state& state, const transfer_request_entry_v12& entry,
+	std::string_view reason) {
 	std::lock_guard lock(state.mutex);
+	state.failures.push_back(parallel_receive_failure{
+		.id     = entry.id,
+		.path   = entry.path,
+		.reason = std::string(reason),
+	});
+}
+
+inline void mark_parallel_receive_rejected(
+	parallel_receive_state& state, const transfer_request_entry_v12& entry,
+	std::string_view reason) {
+	std::lock_guard lock(state.mutex);
+	state.failures.push_back(parallel_receive_failure{
+		.id     = entry.id,
+		.path   = entry.path,
+		.reason = std::string(reason),
+	});
 	++state.processed_entries;
 	++state.rejected_entries;
 }
@@ -398,6 +423,33 @@ inline void mark_parallel_receive_completed(parallel_receive_state& state) {
 	std::lock_guard lock(state.mutex);
 	++state.processed_entries;
 	++state.completed_entries;
+}
+
+inline std::vector<parallel_receive_failure>
+get_parallel_receive_failures(parallel_receive_state& state) {
+	std::lock_guard lock(state.mutex);
+	return state.failures;
+}
+
+inline void print_parallel_receive_failures(parallel_receive_state& state) {
+	auto failures = get_parallel_receive_failures(state);
+	if (failures.empty()) {
+		return;
+	}
+
+	std::sort(failures.begin(), failures.end(),
+			  [](const auto& lhs, const auto& rhs) {
+				  if (lhs.id != rhs.id) {
+					  return lhs.id < rhs.id;
+				  }
+				  return lhs.path < rhs.path;
+			  });
+
+	std::cerr << "sft1.3 receive failures:\n";
+	for (const auto& failure : failures) {
+		std::cerr << "  [" << failure.id << "] " << failure.path << ": "
+				  << failure.reason << '\n';
+	}
 }
 
 inline bool complete_parallel_receive_plan(parallel_receive_plan& plan,
@@ -486,7 +538,7 @@ bool receive_parallel_worker_tasks(
 			if (progress != nullptr) {
 				progress->add_completed(entry->size);
 			}
-			mark_parallel_receive_rejected(receive_state);
+			mark_parallel_receive_rejected(receive_state, *entry, reason);
 			return write_control_frame(target,
 									   build_sft13_rej(entry->id, reason));
 		};
@@ -495,6 +547,8 @@ bool receive_parallel_worker_tasks(
 		case parallel_entry_registration::Accepted:
 			break;
 		case parallel_entry_registration::DuplicateId:
+			record_parallel_receive_failure(receive_state, *entry,
+											"Duplicate parallel file id.");
 			std::cerr << "Receive duplicate parallel file id.\n";
 			return false;
 		case parallel_entry_registration::DuplicatePath:
@@ -535,12 +589,21 @@ bool receive_parallel_worker_tasks(
 				(void)directory.set_permissions(entry->permissions);
 			}
 			if (!write_control_frame(target,
-									 build_sft13_ack(entry->id, 0, 0)) ||
-				!receive_parallel_fin(target, entry->id, 0)) {
+									 build_sft13_ack(entry->id, 0, 0))) {
+				record_parallel_receive_failure(receive_state, *entry,
+												"Failed to send ACK.");
+				return false;
+			}
+			if (!receive_parallel_fin(target, entry->id, 0)) {
+				record_parallel_receive_failure(
+					receive_state, *entry,
+					"Failed to receive matching FIN for directory entry.");
 				return false;
 			}
 			mark_parallel_receive_completed(receive_state);
 			if (!write_control_frame(target, build_sft13_ok(entry->id))) {
+				record_parallel_receive_failure(receive_state, *entry,
+												"Failed to send OK.");
 				return false;
 			}
 			continue;
@@ -607,6 +670,8 @@ bool receive_parallel_worker_tasks(
 
 		if (!write_control_frame(target,
 								 build_sft13_ack(entry->id, offset, length))) {
+			record_parallel_receive_failure(receive_state, *entry,
+											"Failed to send ACK.");
 			return false;
 		}
 		if (progress != nullptr) {
@@ -616,10 +681,15 @@ bool receive_parallel_worker_tasks(
 			!stream_target_range_to_file(
 				target, output_file, entry->path, offset, length, entry->size,
 				*state_path, pipeline_context, progress)) {
+			record_parallel_receive_failure(receive_state, *entry,
+											"Payload receive/write failed.");
 			return false;
 		}
 
 		if (!receive_parallel_fin(target, entry->id, length)) {
+			record_parallel_receive_failure(
+				receive_state, *entry,
+				"Failed to receive matching FIN for file entry.");
 			return false;
 		}
 		parallel_receive_plan plan{
@@ -630,11 +700,15 @@ bool receive_parallel_worker_tasks(
 			.length      = length,
 		};
 		if (!complete_parallel_receive_plan(plan, output_file)) {
+			record_parallel_receive_failure(receive_state, *entry,
+											"Failed to finalize received file.");
 			return false;
 		}
 
 		mark_parallel_receive_completed(receive_state);
 		if (!write_control_frame(target, build_sft13_ok(entry->id))) {
+			record_parallel_receive_failure(receive_state, *entry,
+											"Failed to send OK.");
 			return false;
 		}
 	}
