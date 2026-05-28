@@ -460,7 +460,8 @@ class sft_client : public io_overloads<sft_client> {
 
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
-								const string_type& hosts_path) {
+								const string_type& hosts_path,
+								bool print_local_fingerprint = true) {
 			if (auto ret = _identity.initialize(sec_path, pub_path); !ret) {
 				return ret;
 			}
@@ -468,8 +469,10 @@ class sft_client : public io_overloads<sft_client> {
 				return ret;
 			}
 			this->reset_session();
-			fmt::println("The fingerprint of local public key is {}",
-						 _identity.fingerprint());
+			if (print_local_fingerprint) {
+				fmt::println("The fingerprint of local public key is {}",
+							 _identity.fingerprint());
+			}
 			return {};
 		}
 
@@ -601,7 +604,8 @@ class sft_server : public io_overloads<sft_server> {
 
 		Result<void> initialize(const string_type& sec_path,
 								const string_type& pub_path,
-								const string_type& hosts_path) {
+								const string_type& hosts_path,
+								bool print_local_fingerprint = true) {
 			if (auto ret = _identity.initialize(sec_path, pub_path); !ret) {
 				return ret;
 			}
@@ -609,8 +613,10 @@ class sft_server : public io_overloads<sft_server> {
 				return ret;
 			}
 			this->reset_session();
-			fmt::println("The fingerprint of local public key is {}",
-						 _identity.fingerprint());
+			if (print_local_fingerprint) {
+				fmt::println("The fingerprint of local public key is {}",
+							 _identity.fingerprint());
+			}
 			return {};
 		}
 

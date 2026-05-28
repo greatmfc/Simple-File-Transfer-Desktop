@@ -1387,7 +1387,7 @@ parallel_transfer_options::initialize_worker(kotcpp::sft_client& worker)
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
 	}
-	auto ret = worker.initialize(sec_path, pub_path, hosts_path);
+	auto ret = worker.initialize(sec_path, pub_path, hosts_path, false);
 	if (!ret) {
 		kotcpp::print_error("Fail to initialize parallel client", ret);
 		return false;
@@ -1402,7 +1402,7 @@ parallel_transfer_options::initialize_worker(kotcpp::sft_server& worker)
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
 	}
-	auto ret = worker.initialize(sec_path, pub_path, hosts_path);
+	auto ret = worker.initialize(sec_path, pub_path, hosts_path, false);
 	if (!ret) {
 		kotcpp::print_error("Fail to initialize parallel server", ret);
 		return false;

@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1540" viewBox="0 0 1180 1540" role="img" aria-labelledby="title desc">
+  <title id="title">sft1.2 file transfer protocol flow</title>
+  <desc id="desc">A sequence diagram showing the sender and receiver communication flow for sft1.2, including per-file request, acknowledge or reject, resume range transfer, finish confirmation, and final done acknowledgement.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#1f2937"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .lane { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.5; }
+      .lane-title { fill: #0f172a; font: 700 24px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .title { fill: #0f172a; font: 800 34px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .subtitle { fill: #475569; font: 400 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .lifeline { stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 8 9; }
+      .section { fill: #eef2ff; stroke: #c7d2fe; stroke-width: 1.5; }
+      .section-text { fill: #312e81; font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.4; rx: 8; }
+      .box-text { fill: #111827; font: 500 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .note { fill: #fffbeb; stroke: #f59e0b; stroke-width: 1.3; rx: 8; }
+      .note-text { fill: #78350f; font: 500 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .ok { fill: #ecfdf5; stroke: #10b981; stroke-width: 1.4; rx: 8; }
+      .reject { fill: #fef2f2; stroke: #ef4444; stroke-width: 1.4; rx: 8; }
+      .wire { stroke: #1f2937; stroke-width: 2.2; marker-end: url(#arrow); fill: none; }
+      .wire-blue { stroke: #2563eb; stroke-width: 2.4; marker-end: url(#arrow-blue); fill: none; }
+      .wire-red { stroke: #b91c1c; stroke-width: 2.2; marker-end: url(#arrow-red); fill: none; }
+      .wire-dash { stroke: #64748b; stroke-width: 2; stroke-dasharray: 7 7; marker-end: url(#arrow); fill: none; }
+      .msg { fill: #0f172a; font: 700 15px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .small { fill: #475569; font: 500 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono-small { fill: #334155; font: 500 12px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .step { fill: #334155; font: 700 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1180" height="1540"/>
+
+  <text x="64" y="66" class="title">sft1.2 Transfer Flow</text>
+  <text x="64" y="96" class="subtitle">One control frame per file, receiver-driven range selection for resume, then per-file FIN/OK and final DONE/OK.</text>
+
+  <rect x="70" y="130" width="450" height="1320" class="lane"/>
+  <rect x="660" y="130" width="450" height="1320" class="lane"/>
+  <text x="260" y="170" text-anchor="middle" class="lane-title">Sender</text>
+  <text x="885" y="170" text-anchor="middle" class="lane-title">Receiver</text>
+  <line x1="295" y1="190" x2="295" y2="1410" class="lifeline"/>
+  <line x1="885" y1="190" x2="885" y2="1410" class="lifeline"/>
+
+  <rect x="210" y="215" width="760" height="38" class="section"/>
+  <text x="590" y="240" text-anchor="middle" class="section-text">Connection is already established by the existing secure channel</text>
+
+  <rect x="102" y="286" width="386" height="74" class="box"/>
+  <text x="124" y="314" class="box-text">Build v1.2 send entries from paths</text>
+  <text x="124" y="338" class="small">Read metadata only: remote path, size, type, permissions.</text>
+  <text x="124" y="354" class="small">Do not open file descriptors yet.</text>
+
+  <rect x="700" y="286" width="370" height="74" class="box"/>
+  <text x="722" y="314" class="box-text">Wait for first control frame</text>
+  <text x="722" y="338" class="small">If frame starts with sft1.2/FIL, enter v1.2 path.</text>
+  <text x="722" y="354" class="small">Otherwise dispatch to legacy v1.1 receiver.</text>
+
+  <rect x="210" y="405" width="760" height="38" class="section"/>
+  <text x="590" y="430" text-anchor="middle" class="section-text">Repeat for each file or directory entry</text>
+
+  <rect x="102" y="480" width="386" height="92" class="box"/>
+  <text x="124" y="508" class="box-text">Send per-entry request</text>
+  <text x="124" y="532" class="mono-small">sft1.2/FIL/REQ/&lt;id&gt;/&lt;base64url-path&gt;</text>
+  <text x="124" y="550" class="mono-small">/size/&lt;n&gt;/type/file|dir[/perm/&lt;octal&gt;]</text>
+
+  <line x1="488" y1="526" x2="690" y2="526" class="wire-blue"/>
+  <text x="590" y="506" text-anchor="middle" class="msg">REQ</text>
+
+  <rect x="700" y="480" width="370" height="92" class="box"/>
+  <text x="722" y="508" class="box-text">Parse and validate request</text>
+  <text x="722" y="532" class="small">Decode path, reject absolute or parent traversal paths.</text>
+  <text x="722" y="550" class="small">Create directories as needed; inspect resume state.</text>
+
+  <rect x="700" y="622" width="370" height="78" class="reject"/>
+  <text x="722" y="650" class="box-text">Reject path or unsupported entry</text>
+  <text x="722" y="674" class="mono-small">sft1.2/FIL/REJ/&lt;id&gt;[/reason/... ]</text>
+
+  <line x1="700" y1="662" x2="488" y2="662" class="wire-red"/>
+  <text x="590" y="642" text-anchor="middle" class="msg">REJ</text>
+
+  <rect x="102" y="622" width="386" height="78" class="reject"/>
+  <text x="124" y="650" class="box-text">Skip this entry</text>
+  <text x="124" y="674" class="small">Increment id and continue with the next file.</text>
+
+  <rect x="700" y="744" width="370" height="116" class="ok"/>
+  <text x="722" y="772" class="box-text">Accept entry and choose requested range</text>
+  <text x="722" y="796" class="small">New transfer: offset=0, length=size.</text>
+  <text x="722" y="816" class="small">Resume transfer: offset=received bytes,</text>
+  <text x="722" y="836" class="small">length=size-offset.</text>
+  <text x="722" y="854" class="mono-small">sft1.2/FIL/ACK/&lt;id&gt;/offset/&lt;o&gt;/length/&lt;l&gt;</text>
+
+  <line x1="700" y1="804" x2="488" y2="804" class="wire-blue"/>
+  <text x="590" y="784" text-anchor="middle" class="msg">ACK(offset,length)</text>
+
+  <rect x="102" y="744" width="386" height="116" class="ok"/>
+  <text x="124" y="772" class="box-text">Validate ACK</text>
+  <text x="124" y="796" class="small">id must match current entry.</text>
+  <text x="124" y="816" class="small">Range must be inside the announced size.</text>
+  <text x="124" y="836" class="small">Directories must request offset=0,length=0.</text>
+
+  <rect x="102" y="910" width="386" height="92" class="box"/>
+  <text x="124" y="938" class="box-text">Open only this file if payload is needed</text>
+  <text x="124" y="962" class="small">Open after ACK, verify current size still matches.</text>
+  <text x="124" y="982" class="small">Read and send exactly requested byte range.</text>
+
+  <line x1="488" y1="966" x2="700" y2="966" class="wire"/>
+  <text x="590" y="946" text-anchor="middle" class="msg">payload bytes [offset, offset+length)</text>
+
+  <rect x="700" y="910" width="370" height="92" class="box"/>
+  <text x="722" y="938" class="box-text">Write received range</text>
+  <text x="722" y="962" class="small">Open output file random-access.</text>
+  <text x="722" y="982" class="small">Update resume state after chunks are written.</text>
+
+  <rect x="102" y="1048" width="386" height="72" class="box"/>
+  <text x="124" y="1076" class="box-text">Send entry completion</text>
+  <text x="124" y="1100" class="mono-small">sft1.2/FIL/FIN/&lt;id&gt;/sent/&lt;length&gt;</text>
+
+  <line x1="488" y1="1088" x2="700" y2="1088" class="wire-blue"/>
+  <text x="590" y="1068" text-anchor="middle" class="msg">FIN(sent)</text>
+
+  <rect x="700" y="1048" width="370" height="100" class="box"/>
+  <text x="722" y="1076" class="box-text">Validate FIN and finalize entry</text>
+  <text x="722" y="1100" class="small">id and sent length must match request.</text>
+  <text x="722" y="1120" class="small">Resize to final size, apply permissions, remove state.</text>
+  <text x="722" y="1140" class="mono-small">sft1.2/FIL/OK/&lt;id&gt;</text>
+
+  <line x1="700" y1="1188" x2="488" y2="1188" class="wire-blue"/>
+  <text x="590" y="1168" text-anchor="middle" class="msg">OK(id)</text>
+
+  <rect x="102" y="1160" width="386" height="70" class="ok"/>
+  <text x="124" y="1188" class="box-text">Mark entry done</text>
+  <text x="124" y="1212" class="small">Increment id and send the next REQ.</text>
+
+  <path d="M 295 1240 C 140 1240, 140 452, 295 452" class="wire-dash"/>
+  <text x="126" y="846" class="step">loop until all entries are processed</text>
+
+  <rect x="210" y="1282" width="760" height="38" class="section"/>
+  <text x="590" y="1307" text-anchor="middle" class="section-text">Finish the transfer session</text>
+
+  <rect x="102" y="1350" width="386" height="70" class="box"/>
+  <text x="124" y="1378" class="box-text">Send final completion</text>
+  <text x="124" y="1402" class="mono-small">sft1.2/FIL/DONE/count/&lt;entry-count&gt;</text>
+
+  <line x1="488" y1="1388" x2="700" y2="1388" class="wire-blue"/>
+  <text x="590" y="1368" text-anchor="middle" class="msg">DONE(count)</text>
+
+  <rect x="700" y="1350" width="370" height="70" class="ok"/>
+  <text x="722" y="1378" class="box-text">Acknowledge complete session</text>
+  <text x="722" y="1402" class="mono-small">sft1.2/FIL/OK/all</text>
+
+  <line x1="700" y1="1440" x2="488" y2="1440" class="wire-blue"/>
+  <text x="590" y="1420" text-anchor="middle" class="msg">OK(all)</text>
+
+  <rect x="118" y="1464" width="944" height="42" class="note"/>
+  <text x="140" y="1490" class="note-text">Resume identity is derived from fields such as path, size, permissions and type; the receiver asks for the remaining range with ACK offset/length.</text>
+</svg>
