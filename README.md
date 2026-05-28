@@ -70,6 +70,18 @@ cmake --build . --config Release -j
 ./bin/simple-file-transfer
 ```
 
+### Running Tests
+
+Build the test target first, then run the CTest suite:
+
+```bash
+cmake --build build/linux-debug --target main_transfer_test
+ctest --test-dir build/linux-debug --output-on-failure
+```
+
+If you configured a different build directory, replace `build/linux-debug` with
+that directory.
+
 ## Platform-Specific Notes
 
 ### Windows
