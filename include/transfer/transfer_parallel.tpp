@@ -19,14 +19,14 @@ struct parallel_transfer_options {
 		std::string hosts_path;
 		std::size_t max_workers = 0;
 
-		bool has_identity_paths() const;
-		bool initialize_worker(kotcpp::sft_client& worker) const;
-		bool initialize_worker(kotcpp::sft_server& worker) const;
-		bool accept_worker(kotcpp::sft_server&     worker,
-						   kotcpp::tcp_socket&     listener,
-						   const std::atomic_bool& cancelled) const;
-		bool connect_worker(kotcpp::sft_client& worker,
-							uint16_t            worker_port) const;
+		bool        has_identity_paths() const;
+		bool        initialize_worker(kotcpp::sft_client& worker) const;
+		bool        initialize_worker(kotcpp::sft_server& worker) const;
+		bool        accept_worker(kotcpp::sft_server&     worker,
+								  kotcpp::tcp_socket&     listener,
+								  const std::atomic_bool& cancelled) const;
+		bool        connect_worker(kotcpp::sft_client& worker,
+								   uint16_t            worker_port) const;
 };
 
 struct parallel_send_task {
@@ -51,13 +51,13 @@ struct parallel_receive_failure {
 };
 
 struct parallel_receive_state {
-		std::mutex                      mutex;
-		std::unordered_set<size_t>      seen_ids;
-		std::unordered_set<std::string> seen_paths;
+		std::mutex                            mutex;
+		std::unordered_set<size_t>            seen_ids;
+		std::unordered_set<std::string>       seen_paths;
 		std::vector<parallel_receive_failure> failures;
-		std::size_t                     processed_entries = 0;
-		std::size_t                     completed_entries = 0;
-		std::size_t                     rejected_entries  = 0;
+		std::size_t                           processed_entries = 0;
+		std::size_t                           completed_entries = 0;
+		std::size_t                           rejected_entries  = 0;
 };
 
 enum class parallel_entry_registration {
@@ -96,8 +96,7 @@ inline bool parallel_transfer_options::has_identity_paths() const {
 }
 
 inline bool
-parallel_transfer_options::initialize_worker(kotcpp::sft_client& worker)
-	const {
+parallel_transfer_options::initialize_worker(kotcpp::sft_client& worker) const {
 	if (!has_identity_paths()) {
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
@@ -111,8 +110,7 @@ parallel_transfer_options::initialize_worker(kotcpp::sft_client& worker)
 }
 
 inline bool
-parallel_transfer_options::initialize_worker(kotcpp::sft_server& worker)
-	const {
+parallel_transfer_options::initialize_worker(kotcpp::sft_server& worker) const {
 	if (!has_identity_paths()) {
 		std::cerr << "Parallel transfer requires identity paths.\n";
 		return false;
@@ -395,9 +393,10 @@ register_parallel_receive_entry(parallel_receive_state&           state,
 	return parallel_entry_registration::Accepted;
 }
 
-inline void record_parallel_receive_failure(
-	parallel_receive_state& state, const transfer_request_entry_v12& entry,
-	std::string_view reason) {
+inline void
+record_parallel_receive_failure(parallel_receive_state&           state,
+								const transfer_request_entry_v12& entry,
+								std::string_view                  reason) {
 	std::lock_guard lock(state.mutex);
 	state.failures.push_back(parallel_receive_failure{
 		.id     = entry.id,
@@ -406,9 +405,10 @@ inline void record_parallel_receive_failure(
 	});
 }
 
-inline void mark_parallel_receive_rejected(
-	parallel_receive_state& state, const transfer_request_entry_v12& entry,
-	std::string_view reason) {
+inline void
+mark_parallel_receive_rejected(parallel_receive_state&           state,
+							   const transfer_request_entry_v12& entry,
+							   std::string_view                  reason) {
 	std::lock_guard lock(state.mutex);
 	state.failures.push_back(parallel_receive_failure{
 		.id     = entry.id,
@@ -527,11 +527,11 @@ bool receive_parallel_worker_tasks(
 
 		bool total_accounted = false;
 		auto account_total   = [&]() {
-			if (progress != nullptr && !progress->total_preannounced &&
-				!total_accounted) {
-				progress->add_total(entry->size);
-				total_accounted = true;
-			}
+            if (progress != nullptr && !progress->total_preannounced &&
+                !total_accounted) {
+                progress->add_total(entry->size);
+                total_accounted = true;
+            }
 		};
 		auto reject_current = [&](std::string_view reason) {
 			account_total();
@@ -640,8 +640,8 @@ bool receive_parallel_worker_tasks(
 			kotcpp::print_error("Fail to load resume state", state);
 			offset = 0;
 		}
-		else if (state->has_value()) {
-			offset = (*state)->received_bytes;
+		else {
+			offset = (*state).received_bytes;
 		}
 
 		if (std::filesystem::exists(*output_path, ec) && !ec) {
@@ -700,8 +700,8 @@ bool receive_parallel_worker_tasks(
 			.length      = length,
 		};
 		if (!complete_parallel_receive_plan(plan, output_file)) {
-			record_parallel_receive_failure(receive_state, *entry,
-											"Failed to finalize received file.");
+			record_parallel_receive_failure(
+				receive_state, *entry, "Failed to finalize received file.");
 			return false;
 		}
 

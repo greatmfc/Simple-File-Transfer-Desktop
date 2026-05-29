@@ -1,5 +1,6 @@
 #include "main_transfer.tpp"
 
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -726,12 +727,12 @@ void test_parallel_receiver_worker_records_rejected_task(
 	const fs::path output_dir = temp_root / "receive_parallel_reject";
 	fs::create_directories(output_dir);
 
-	const auto request = sft_detail::build_sft13_req(
-		5, "../blocked.txt", 0, false, fs::perms::unknown);
-	ScriptedTransferTarget target({
-		to_bytes(request),
-		to_bytes(sft_detail::build_sft13_worker_done(2)),
-	});
+	const auto request = sft_detail::build_sft13_req(5, "../blocked.txt", 0,
+													 false, fs::perms::unknown);
+	ScriptedTransferTarget             target({
+        to_bytes(request),
+        to_bytes(sft_detail::build_sft13_worker_done(2)),
+    });
 	sft_detail::parallel_receive_state receive_state;
 
 	require(sft_detail::receive_parallel_worker_tasks(target, receive_state,
@@ -954,14 +955,13 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 
 	const fs::path state_path  = temp_root / filename;
 	auto           empty_state = sft_detail::load_resume_state(state_path);
-	require(empty_state.has_value() && !empty_state->has_value(),
+	require(!empty_state.has_value(),
 			"missing resume state should load as empty");
 
 	require(sft_detail::store_resume_state(state_path, 4096).has_value(),
 			"store_resume_state failed");
 	auto loaded = sft_detail::load_resume_state(state_path);
-	require(loaded.has_value() && loaded->has_value() &&
-				(*loaded)->received_bytes == 4096,
+	require(loaded.has_value() && (*loaded).received_bytes == 4096,
 			"load_resume_state returned an unexpected byte count");
 
 	require(sft_detail::sanitize_resume_offset(4096, 8192) == 4096,
@@ -974,7 +974,7 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 	require(sft_detail::remove_resume_state(state_path).has_value(),
 			"remove_resume_state failed");
 	auto removed_state = sft_detail::load_resume_state(state_path);
-	require(removed_state.has_value() && !removed_state->has_value(),
+	require(!removed_state.has_value(),
 			"removed resume state should load as empty");
 }
 
@@ -1004,16 +1004,13 @@ void complete_secure_session_handshake(kotcpp::ClientSession& client,
 	require(server_response.has_value(),
 			"server failed to handle negotiated client hello");
 
-	auto client_auth =
-		client.step2_handle_response(server_response->data(),
-									 server_response->size(),
-									 trust_any_test_key);
+	auto client_auth = client.step2_handle_response(
+		server_response->data(), server_response->size(), trust_any_test_key);
 	require(client_auth.has_value(),
 			"client failed to handle negotiated server response");
 
-	auto server_auth =
-		server.step2_handle_auth(client_auth->data(), client_auth->size(),
-								 trust_any_test_key);
+	auto server_auth = server.step2_handle_auth(
+		client_auth->data(), client_auth->size(), trust_any_test_key);
 	require(server_auth.has_value(),
 			"server failed to authenticate negotiated client response");
 	require(client.is_established() && server.is_established(),
@@ -1021,23 +1018,24 @@ void complete_secure_session_handshake(kotcpp::ClientSession& client,
 }
 
 void test_secure_session_negotiates_aegis256() {
-	const auto client_identity = make_test_identity();
-	const auto server_identity = make_test_identity();
+	const auto            client_identity = make_test_identity();
+	const auto            server_identity = make_test_identity();
 
 	kotcpp::ClientSession client(client_identity.pub, client_identity.sec);
 	kotcpp::ServerSession server(server_identity.pub, server_identity.sec);
 
 	complete_secure_session_handshake(client, server);
-	require(client.encryption_algorithm() == kotcpp::SecureAeadAlgorithm::Aegis256,
+	require(client.encryption_algorithm() ==
+				kotcpp::SecureAeadAlgorithm::Aegis256,
 			"client should prefer AEGIS256 when both sides support it");
-	require(server.encryption_algorithm() == kotcpp::SecureAeadAlgorithm::Aegis256,
+	require(server.encryption_algorithm() ==
+				kotcpp::SecureAeadAlgorithm::Aegis256,
 			"server should select AEGIS256 when both sides support it");
 
 	const auto plaintext = to_bytes("AEGIS negotiated payload");
 	auto       encrypted = client.encrypt(plaintext);
 	require(encrypted.has_value(), "AEGIS encryption failed");
-	require(encrypted->size() ==
-				plaintext.size() + crypto_aead_aegis256_ABYTES,
+	require(encrypted->size() == plaintext.size() + crypto_aead_aegis256_ABYTES,
 			"AEGIS ciphertext overhead is unexpected");
 
 	auto decrypted = server.decrypt(*encrypted);
@@ -1046,8 +1044,8 @@ void test_secure_session_negotiates_aegis256() {
 }
 
 void test_secure_session_falls_back_to_xchacha() {
-	const auto client_identity = make_test_identity();
-	const auto server_identity = make_test_identity();
+	const auto            client_identity = make_test_identity();
+	const auto            server_identity = make_test_identity();
 
 	kotcpp::ClientSession client(
 		client_identity.pub, client_identity.sec,
@@ -1064,12 +1062,11 @@ void test_secure_session_falls_back_to_xchacha() {
 }
 
 void test_secure_session_rejects_no_common_aead() {
-	const auto client_identity = make_test_identity();
-	const auto server_identity = make_test_identity();
+	const auto            client_identity = make_test_identity();
+	const auto            server_identity = make_test_identity();
 
-	kotcpp::ClientSession client(
-		client_identity.pub, client_identity.sec,
-		{kotcpp::SecureAeadAlgorithm::Aegis256});
+	kotcpp::ClientSession client(client_identity.pub, client_identity.sec,
+								 {kotcpp::SecureAeadAlgorithm::Aegis256});
 	kotcpp::ServerSession server(
 		server_identity.pub, server_identity.sec,
 		{kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305});
@@ -1079,6 +1076,71 @@ void test_secure_session_rejects_no_common_aead() {
 		server.step1_handle_hello(hello.data(), hello.size());
 	require(!server_response.has_value(),
 			"server should reject a client with no common AEAD algorithm");
+	require(server_response.error().is_sft_error(
+				kotcpp::SftErrorDomain::SecureAead,
+				kotcpp::SecureAeadError::NoMutualAlgorithm),
+			"no-common-AEAD failure should keep its AEAD SFT error code");
+}
+
+void test_secure_session_accepts_legacy_peer_without_aead_extension() {
+	const auto server_identity = make_test_identity();
+
+	kotcpp::ServerSession server(server_identity.pub, server_identity.sec);
+
+	std::array<uint8_t, crypto_kx_PUBLICKEYBYTES> legacy_client_pk{};
+	std::array<uint8_t, crypto_kx_SECRETKEYBYTES> legacy_client_sk{};
+	crypto_kx_keypair(legacy_client_pk.data(), legacy_client_sk.data());
+
+	auto server_response = server.step1_handle_hello(legacy_client_pk.data(),
+													 legacy_client_pk.size());
+	require(server_response.has_value(),
+			"server should accept a legacy peer when XChaCha is available");
+	require(server.encryption_algorithm() ==
+				kotcpp::SecureAeadAlgorithm::XChaCha20Poly1305,
+			"legacy peer fallback should select XChaCha20-Poly1305");
+}
+
+void test_secure_session_requires_aead_negotiation() {
+	const auto client_identity = make_test_identity();
+	const auto server_identity = make_test_identity();
+
+	kotcpp::ServerSession strict_server(
+		server_identity.pub, server_identity.sec,
+		kotcpp::default_secure_aead_algorithms(), true);
+
+	std::array<uint8_t, crypto_kx_PUBLICKEYBYTES> legacy_client_pk{};
+	std::array<uint8_t, crypto_kx_SECRETKEYBYTES> legacy_client_sk{};
+	crypto_kx_keypair(legacy_client_pk.data(), legacy_client_sk.data());
+
+	auto strict_response = strict_server.step1_handle_hello(
+		legacy_client_pk.data(), legacy_client_pk.size());
+	require(!strict_response.has_value(),
+			"strict server should reject a client without AEAD negotiation");
+	require(strict_response.error().is_sft_error(
+				kotcpp::SftErrorDomain::SecureAead,
+				kotcpp::SecureAeadError::MissingNegotiation),
+			"strict server should report the missing offer as an AEAD SFT "
+			"error");
+	require(kotcpp::is_missing_aead_negotiation_error(strict_response.error()),
+			"missing AEAD offer should be recognized by the helper");
+
+	kotcpp::ClientSession strict_client(
+		client_identity.pub, client_identity.sec,
+		kotcpp::default_secure_aead_algorithms(), true);
+	(void)strict_client.step1_generate_hello();
+
+	std::vector<uint8_t> legacy_server_response(
+		kotcpp::ServerResponseFixedBytes);
+	auto client_auth = strict_client.step2_handle_response(
+		legacy_server_response.data(), legacy_server_response.size(),
+		trust_any_test_key);
+	require(!client_auth.has_value(),
+			"strict client should reject a server without AEAD negotiation");
+	require(client_auth.error().is_sft_error(
+				kotcpp::SftErrorDomain::SecureAead,
+				kotcpp::SecureAeadError::MissingNegotiation),
+			"strict client should report the missing selection as an AEAD SFT "
+			"error");
 }
 
 } // namespace
@@ -1125,6 +1187,8 @@ int main() {
 		test_secure_session_negotiates_aegis256();
 		test_secure_session_falls_back_to_xchacha();
 		test_secure_session_rejects_no_common_aead();
+		test_secure_session_accepts_legacy_peer_without_aead_extension();
+		test_secure_session_requires_aead_negotiation();
 		fs::remove_all(temp_root);
 		std::cout << "main_transfer_test passed\n";
 		return 0;

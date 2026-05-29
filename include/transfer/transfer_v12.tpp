@@ -301,8 +301,8 @@ void receive_file_v12(Target& target, std::string_view first_frame) {
 				kotcpp::print_error("Fail to load resume state", state);
 				offset = 0;
 			}
-			else if (state->has_value()) {
-				offset = (*state)->received_bytes;
+			else {
+				offset = (*state).received_bytes;
 			}
 
 			if (std::filesystem::exists(*output_path, ec) && !ec) {

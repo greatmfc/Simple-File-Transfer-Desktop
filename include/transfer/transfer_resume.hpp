@@ -75,14 +75,14 @@ inline kotcpp::SizeType sanitize_resume_offset(kotcpp::SizeType received_bytes,
 	return received_bytes;
 }
 
-inline kotcpp::Result<std::optional<transfer_resume_state>>
+inline kotcpp::Result<transfer_resume_state>
 load_resume_state(const std::filesystem::path& state_path) {
 	std::error_code ec;
 	if (!std::filesystem::exists(state_path, ec)) {
 		if (ec) {
 			return tl::unexpected(kotcpp::filesystem_error(ec));
 		}
-		return std::nullopt;
+		return transfer_resume_state{0};
 	}
 
 	std::ifstream input(state_path, std::ios::binary);
