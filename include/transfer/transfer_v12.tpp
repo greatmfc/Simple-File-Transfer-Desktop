@@ -5,7 +5,7 @@
 
 template <kotcpp::AsyncTransferTarget Target>
 bool send_file_v12(Target& target, const std::vector<std::string>& files) {
-	auto entries = sft_detail::build_sft12_send_entries(files);
+	auto [entries, total_size] = sft_detail::build_sft12_send_entries(files);
 	if (entries.empty()) {
 		std::cerr << "No valid files to send.\n";
 		return false;

@@ -37,7 +37,6 @@ inline constexpr std::string_view sft12_version           = "sft1.2";
 inline constexpr std::string_view sft13_version           = "sft1.3";
 inline constexpr std::string_view sft12_type              = "FIL";
 
-
 struct parallel_transfer_progress {
 		explicit parallel_transfer_progress(std::size_t initial_total = 0,
 											bool preannounced_total   = false)
@@ -46,7 +45,8 @@ struct parallel_transfer_progress {
 		}
 
 		static std::size_t byte_count(kotcpp::SizeType bytes) {
-			return bytes <= 0 ? std::size_t{0} : static_cast<std::size_t>(bytes);
+			return bytes <= 0 ? std::size_t{0}
+							  : static_cast<std::size_t>(bytes);
 		}
 
 		void add_total(kotcpp::SizeType bytes) {
@@ -70,9 +70,8 @@ struct parallel_transfer_progress {
 				return;
 			}
 
-			auto completed =
-				completed_bytes.load(std::memory_order_relaxed);
-			completed = std::min(completed, total);
+			auto completed = completed_bytes.load(std::memory_order_relaxed);
+			completed      = std::min(completed, total);
 			if (!finish && completed >= total) {
 				completed = total - 1;
 			}
@@ -268,9 +267,11 @@ inline void append_sft12_file_entry(std::vector<send_entry_v12>& entries,
 						 get_path_permissions_or_unknown(local_path));
 }
 
-inline std::vector<send_entry_v12>
+inline std::pair<std::vector<send_entry_v12>, size_t>
 build_sft12_send_entries(const std::vector<std::string>& path_list) {
 	std::vector<send_entry_v12> entries;
+	size_t                      total_size = 0;
+
 	for (const auto& path_string : path_list) {
 		const std::filesystem::path path(
 			is_directory_marker(path_string)
@@ -338,6 +339,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 						ec.clear();
 						continue;
 					}
+					total_size += entry.file_size(ec);
 					append_sft12_file_entry(entries, entry.path(),
 											folder_name + relative.string());
 				}
@@ -368,6 +370,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 			}
 		}
 		else if (std::filesystem::is_regular_file(status)) {
+			total_size += std::filesystem::file_size(path);
 			append_sft12_file_entry(entries, path, path.filename().string());
 		}
 		else {
@@ -376,7 +379,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 									 path.string());
 		}
 	}
-	return entries;
+	return {entries, total_size};
 }
 
 inline std::size_t get_local_thread_count() {

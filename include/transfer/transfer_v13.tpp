@@ -6,7 +6,8 @@ template <kotcpp::AsyncTransferTarget Target>
 bool send_file_v13_parallel(
 	Target& target, const std::vector<std::string>& files,
 	const sft_detail::parallel_transfer_options& options) {
-	auto entries = sft_detail::build_sft12_send_entries(files);
+	const auto [entries, total_bytes] =
+		sft_detail::build_sft12_send_entries(files);
 	if (entries.empty()) {
 		std::cerr << "No valid files to send.\n";
 		return false;
@@ -17,7 +18,6 @@ bool send_file_v13_parallel(
 	for (size_t file_id = 0; file_id < entries.size(); ++file_id) {
 		tasks.emplace_back(file_id, entries[file_id]);
 	}
-	const auto total_bytes      = sft_detail::total_transfer_bytes(entries);
 
 	const auto proposed_workers = sft_detail::get_default_parallel_worker_count(
 		tasks.size(), options.max_workers);
@@ -237,8 +237,8 @@ void receive_file_v13_parallel(
 
 	const auto output_root = std::filesystem::current_path();
 	sft_detail::parallel_receive_state receive_state;
-	auto print_receive_failures = [&]() {
-		sft_detail::print_parallel_receive_failures(receive_state);
+	auto                               print_receive_failures = [&]() {
+        sft_detail::print_parallel_receive_failures(receive_state);
 	};
 
 	const auto actual_workers = std::min(accepted_workers, *entry_count_res);
