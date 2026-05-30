@@ -103,6 +103,7 @@ void progress_bar_with_speed_t(size_t num, size_t total_num,
  * - 降低打印频率：仅在变化超过 1% 或间隔 >= 100ms 时更新
  * - 使用预构建字符串减少 I/O 操作
  * - 避免不必要的临时对象创建
+ * - 传输中显示预计剩余时间，完成时显示本次传输平均速度
  * @param current 已发送/下载的字节数
  * @param total 总字节数
  * @param restart 是否重置状态（在新传输开始前调用）
@@ -111,99 +112,149 @@ inline void progress_bar_with_speed(size_t current, size_t total,
 									bool restart = false) {
 	// static std::mutex progress_mutex;
 	// std::lock_guard   progress_lock(progress_mutex);
-	static auto      start_time      = std::chrono::steady_clock::now();
-	static auto      last_time       = std::chrono::steady_clock::now();
-	static auto      last_print_time = std::chrono::steady_clock::now();
-	static long long last_current    = 0;
-	static int       last_percent    = -1;
-	static double    instant_speed   = 0;
-	static char      buffer[128]; // 预分配缓冲区
+	static auto   start_time      = std::chrono::steady_clock::now();
+	static auto   last_time       = std::chrono::steady_clock::now();
+	static auto   last_print_time = std::chrono::steady_clock::now();
+	static size_t start_current   = 0;
+	static size_t last_current    = 0;
+	static int    last_percent    = -1;
+	static double instant_speed   = 0;
+	static char   buffer[192]; // 预分配缓冲区
 
 	if (restart) {
+		const auto display_current =
+			total > 0 ? std::min(current, total) : current;
 		start_time      = std::chrono::steady_clock::now();
 		last_time       = start_time;
 		last_print_time = start_time;
-		last_current    = 0;
+		start_current   = display_current;
+		last_current    = display_current;
 		last_percent    = -1;
 		instant_speed   = 0;
 		return;
 	}
 
-	if (total <= 0)
+	if (total == 0) {
 		return;
+	}
 
-	// 1. 计算当前百分比（整数，0-100）
-	int  percent = static_cast<int>((current * 100) / total);
+	const auto display_current = std::min(current, total);
+	const auto now             = std::chrono::steady_clock::now();
+	const int  percent = static_cast<int>(static_cast<double>(display_current) *
+										  100.0 / static_cast<double>(total));
 
-	// 2. 节流：仅在百分比变化或超过100ms时更新
-	auto now = std::chrono::steady_clock::now();
-	auto since_last_print =
+	const auto since_last_print =
 		std::chrono::duration_cast<std::chrono::milliseconds>(now -
 															  last_print_time);
-
-	// 跳过条件：百分比相同 且 距上次打印不足100ms 且 未完成
 	if (percent == last_percent && since_last_print.count() < 100 &&
-		current < total) {
-		return; // 直接返回，不做任何 I/O
+		display_current < total) {
+		return;
 	}
 
-	// 3. 每500ms更新速度计算
-	auto diff_time =
+	const auto diff_time =
 		std::chrono::duration_cast<std::chrono::milliseconds>(now - last_time);
 	if (diff_time.count() >= 200) {
-		double diff_bytes = static_cast<double>(current - last_current);
-		instant_speed     = (diff_bytes / diff_time.count()) * 1000.0;
-		last_time         = now;
-		last_current      = current;
+		const auto diff_bytes = display_current >= last_current
+									? display_current - last_current
+									: 0;
+		instant_speed         = static_cast<double>(diff_bytes) /
+						static_cast<double>(diff_time.count()) * 1000.0;
+		last_time    = now;
+		last_current = display_current;
 	}
 
-	// 4. 速度单位换算（使用 string_view 避免分配）
-	std::string_view unit;
-	double           displaySpeed = instant_speed;
-	if (instant_speed >= 1024.0 * 1024.0 * 1024.0) {
-		displaySpeed /= (1024.0 * 1024.0 * 1024.0);
-		unit = "GB/s";
+	auto scale_speed = [](double speed, std::string_view& unit) {
+		unit = "B/s";
+		if (speed >= 1024.0 * 1024.0 * 1024.0) {
+			unit = "GB/s";
+			return speed / (1024.0 * 1024.0 * 1024.0);
+		}
+		if (speed >= 1024.0 * 1024.0) {
+			unit = "MB/s";
+			return speed / (1024.0 * 1024.0);
+		}
+		if (speed >= 1024.0) {
+			unit = "KB/s";
+			return speed / 1024.0;
+		}
+		return speed;
+	};
+
+	auto format_duration = [](double seconds, char* output, size_t size) {
+		if (seconds <= 0.0) {
+			std::snprintf(output, size, "--:--:--");
+			return;
+		}
+
+		auto total_seconds = static_cast<unsigned long long>(seconds + 0.999);
+		const auto hours   = total_seconds / 3600;
+		total_seconds %= 3600;
+		const auto minutes = total_seconds / 60;
+		const auto secs    = total_seconds % 60;
+		if (hours > 99) {
+			std::snprintf(output, size, "%lluh%02llum", hours, minutes);
+			return;
+		}
+		std::snprintf(output, size, "%02llu:%02llu:%02llu", hours, minutes,
+					  secs);
+	};
+
+	std::string_view speed_unit;
+	const double     display_speed = scale_speed(instant_speed, speed_unit);
+	const auto       elapsed_seconds =
+		std::chrono::duration<double>(now - start_time).count();
+	const auto transferred =
+		display_current >= start_current ? display_current - start_current : 0;
+	const auto average_speed =
+		elapsed_seconds > 0.0
+			? static_cast<double>(transferred) / elapsed_seconds
+			: 0.0;
+	const auto eta_speed = average_speed > 0.0 ? average_speed : instant_speed;
+	char       eta[24]{};
+	format_duration(eta_speed > 0.0
+						? static_cast<double>(total - display_current) /
+							  eta_speed
+						: 0.0,
+					eta, sizeof(eta));
+
+	constexpr int bar_width = 50;
+	const int     pos       = (bar_width * percent) / 100;
+	char          bar[bar_width + 1];
+	std::memset(bar, ' ', sizeof(bar) - 1);
+	std::memset(bar, '=', static_cast<size_t>(pos));
+	if (pos < bar_width) {
+		bar[pos] = '>';
 	}
-	else if (instant_speed >= 1024.0 * 1024.0) {
-		displaySpeed /= (1024.0 * 1024.0);
-		unit = "MB/s";
-	}
-	else if (instant_speed >= 1024.0) {
-		displaySpeed /= 1024.0;
-		unit = "KB/s";
+	bar[bar_width] = '\0';
+
+	int len        = 0;
+	if (display_current >= total) {
+		std::string_view avg_unit;
+		const auto display_avg_speed = scale_speed(average_speed, avg_unit);
+		len =
+			std::snprintf(buffer, sizeof(buffer), "\r[%s] %3d%% avg %.2f %s   ",
+						  bar, percent, display_avg_speed, avg_unit.data());
 	}
 	else {
-		unit = "B/s";
+		len = std::snprintf(buffer, sizeof(buffer),
+							"\r[%s] %3d%% %.2f %s ETA %s   ", bar, percent,
+							display_speed, speed_unit.data(), eta);
+	}
+	if (len <= 0) {
+		return;
+	}
+	if (static_cast<size_t>(len) >= sizeof(buffer)) {
+		len = static_cast<int>(sizeof(buffer) - 1);
 	}
 
-	// 5. 使用 snprintf 一次性格式化到缓冲区
-	constexpr int barWidth = 50;
-	int           pos      = (barWidth * percent) / 100;
-
-	// 构建进度条部分
-	char          bar[barWidth + 1];
-	std::memset(bar, ' ', barWidth);
-	std::memset(bar, '=', pos);
-	if (pos < barWidth)
-		bar[pos] = '>';
-	bar[barWidth] = '\0';
-
-	// 一次性格式化完整输出
-	int len = std::snprintf(buffer, sizeof(buffer), "\r[%s] %3d%% %.2f %s   ",
-							bar, percent, displaySpeed, unit.data());
-
-	// 6. 单次 write 调用 + flush（Linux 需要显式刷新）
 	std::cout.write(buffer, len);
-	std::cout.flush(); // 必须刷新，否则 Linux 终端会缓冲
+	std::cout.flush();
 
-	// 更新状态
 	last_percent    = percent;
 	last_print_time = now;
-
-	// 7. 仅在完成时刷新和换行
-	if (current >= total) {
+	if (display_current >= total) {
 		std::cout << std::endl;
-		last_percent = -1; // 重置以便下次传输
+		last_percent = -1;
 	}
 }
 
