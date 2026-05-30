@@ -955,7 +955,7 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 
 	const fs::path state_path  = temp_root / filename;
 	auto           empty_state = sft_detail::load_resume_state(state_path);
-	require(!empty_state.has_value(),
+	require(empty_state.has_value() && empty_state->received_bytes == 0,
 			"missing resume state should load as empty");
 
 	require(sft_detail::store_resume_state(state_path, 4096).has_value(),
@@ -974,7 +974,7 @@ void test_resume_state_helpers(const fs::path& temp_root) {
 	require(sft_detail::remove_resume_state(state_path).has_value(),
 			"remove_resume_state failed");
 	auto removed_state = sft_detail::load_resume_state(state_path);
-	require(!removed_state.has_value(),
+	require(removed_state.has_value() && removed_state->received_bytes == 0,
 			"removed resume state should load as empty");
 }
 

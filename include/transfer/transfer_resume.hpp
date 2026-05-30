@@ -75,6 +75,42 @@ inline kotcpp::SizeType sanitize_resume_offset(kotcpp::SizeType received_bytes,
 	return received_bytes;
 }
 
+inline kotcpp::Result<std::string> read_resume_state_line(kotcpp::File& file) {
+	constexpr std::size_t max_line_bytes = 4096;
+	std::string           line;
+	std::array<Byte, 256> buffer{};
+
+	while (line.size() < max_line_bytes) {
+		auto read_res = file.read(buffer);
+		if (!read_res) {
+			return tl::unexpected(read_res.error());
+		}
+		if (*read_res == 0) {
+			break;
+		}
+
+		const auto       bytes_read = static_cast<std::size_t>(*read_res);
+		std::string_view chunk(reinterpret_cast<const char*>(buffer.data()),
+							   bytes_read);
+		if (auto newline = chunk.find('\n');
+			newline != std::string_view::npos) {
+			line.append(chunk.data(), newline);
+			return line;
+		}
+		line.append(chunk.data(), chunk.size());
+
+		if (bytes_read < buffer.size()) {
+			break;
+		}
+	}
+
+	if (line.size() >= max_line_bytes) {
+		return tl::unexpected(
+			kotcpp::make_sft_error("Receive malformed resume state file."));
+	}
+	return line;
+}
+
 inline kotcpp::Result<transfer_resume_state>
 load_resume_state(const std::filesystem::path& state_path) {
 	std::error_code ec;
@@ -85,21 +121,24 @@ load_resume_state(const std::filesystem::path& state_path) {
 		return transfer_resume_state{0};
 	}
 
-	std::ifstream input(state_path, std::ios::binary);
-	if (!input.is_open()) {
-		return tl::unexpected(
-			kotcpp::make_sft_error("Fail to open resume state file."));
+	kotcpp::File input_file(state_path);
+	if (auto open_res = input_file.open_read_only(); !open_res) {
+		return tl::unexpected(open_res.error());
 	}
 
-	std::string line;
-	std::getline(input, line);
+	auto line_res = read_resume_state_line(input_file);
+	if (!line_res) {
+		return tl::unexpected(line_res.error());
+	}
+
+	const std::string_view     line(*line_res);
 	constexpr std::string_view prefix = "sft1.2/FIL/STATE/";
 	if (!line.starts_with(prefix)) {
 		return tl::unexpected(
 			kotcpp::make_sft_error("Receive malformed resume state file."));
 	}
 
-	const auto       number = std::string_view(line).substr(prefix.size());
+	const auto       number         = line.substr(prefix.size());
 	kotcpp::SizeType received_bytes = 0;
 	auto [ptr, parse_ec]            = std::from_chars(
         number.data(), number.data() + number.size(), received_bytes);
@@ -121,15 +160,27 @@ store_resume_state(const std::filesystem::path& state_path,
 		}
 	}
 
-	std::ofstream output(state_path, std::ios::binary | std::ios::trunc);
-	if (!output.is_open()) {
-		return tl::unexpected(kotcpp::make_sft_error(
-			"Fail to open resume state file for writing."));
+	kotcpp::File output_file(state_path);
+	if (auto open_res = output_file.open(true, kotcpp::File::iomode::WRONLY);
+		!open_res) {
+		return tl::unexpected(open_res.error());
 	}
-	output << "sft1.2/FIL/STATE/" << received_bytes << '\n';
-	if (!output.good()) {
-		return tl::unexpected(
-			kotcpp::make_sft_error("Fail to write resume state file."));
+
+	const auto content = std::format("sft1.2/FIL/STATE/{}\n", received_bytes);
+	auto       written = kotcpp::SizeType{0};
+	const auto total   = static_cast<kotcpp::SizeType>(content.size());
+	while (written < total) {
+		auto write_res = output_file.write(
+			reinterpret_cast<const Byte*>(content.data()) + written,
+			total - written);
+		if (!write_res) {
+			return tl::unexpected(write_res.error());
+		}
+		if (*write_res == 0) {
+			return tl::unexpected(
+				kotcpp::make_sft_error("Fail to write resume state file."));
+		}
+		written += *write_res;
 	}
 	return {};
 }
