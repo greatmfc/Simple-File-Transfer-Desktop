@@ -37,11 +37,90 @@ inline constexpr std::string_view sft12_version           = "sft1.2";
 inline constexpr std::string_view sft13_version           = "sft1.3";
 inline constexpr std::string_view sft12_type              = "FIL";
 
+enum class parallel_transfer_event_kind : uint8_t {
+	Progress,
+	WorkerCompleted
+};
+
+struct parallel_transfer_event {
+		parallel_transfer_event_kind kind =
+			parallel_transfer_event_kind::Progress;
+		std::size_t worker_index    = 0;
+		std::size_t total_delta     = 0;
+		std::size_t completed_delta = 0;
+};
+
+struct parallel_transfer_event_queue {
+		void notify_progress(std::size_t total_delta,
+							 std::size_t completed_delta) {
+			if (total_delta == 0 && completed_delta == 0) {
+				return;
+			}
+			{
+				std::lock_guard lock(mutex);
+				pending_total_delta += total_delta;
+				pending_completed_delta += completed_delta;
+				progress_pending = true;
+			}
+			cv.notify_one();
+		}
+
+		void notify_worker_completed(std::size_t index) {
+			{
+				std::lock_guard lock(mutex);
+				completed_workers.push_back(index);
+			}
+			cv.notify_one();
+		}
+
+		parallel_transfer_event wait() {
+			std::unique_lock lock(mutex);
+			cv.wait(lock, [&]() {
+				return progress_pending || !completed_workers.empty();
+			});
+
+			if (progress_pending) {
+				const auto total_delta     = pending_total_delta;
+				const auto completed_delta = pending_completed_delta;
+				pending_total_delta        = 0;
+				pending_completed_delta    = 0;
+				progress_pending           = false;
+				return {
+					.kind            = parallel_transfer_event_kind::Progress,
+					.total_delta     = total_delta,
+					.completed_delta = completed_delta,
+				};
+			}
+
+			if (!completed_workers.empty()) {
+				const auto index = completed_workers.front();
+				completed_workers.pop_front();
+				return {
+					.kind = parallel_transfer_event_kind::WorkerCompleted,
+					.worker_index = index,
+				};
+			}
+
+			return {
+				.kind = parallel_transfer_event_kind::Progress,
+			};
+		}
+
+	private:
+		std::mutex              mutex;
+		std::condition_variable cv;
+		std::deque<std::size_t> completed_workers;
+		std::size_t             pending_total_delta     = 0;
+		std::size_t             pending_completed_delta = 0;
+		bool                    progress_pending        = false;
+};
+
 struct parallel_transfer_progress {
-		explicit parallel_transfer_progress(std::size_t initial_total = 0,
-											bool preannounced_total   = false)
+		explicit parallel_transfer_progress(
+			std::size_t initial_total = 0, bool preannounced_total = false,
+			parallel_transfer_event_queue* event_queue = nullptr)
 			: total_bytes(initial_total),
-			  total_preannounced(preannounced_total) {
+			  total_preannounced(preannounced_total), events(event_queue) {
 		}
 
 		static std::size_t byte_count(kotcpp::SizeType bytes) {
@@ -53,15 +132,35 @@ struct parallel_transfer_progress {
 			if (bytes <= 0) {
 				return;
 			}
-			total_bytes.fetch_add(byte_count(bytes), std::memory_order_relaxed);
+			const auto count = byte_count(bytes);
+			if (events != nullptr) {
+				events->notify_progress(count, 0);
+				return;
+			}
+			total_bytes.fetch_add(count, std::memory_order_relaxed);
 		}
 
 		void add_completed(kotcpp::SizeType bytes) {
 			if (bytes <= 0) {
 				return;
 			}
-			completed_bytes.fetch_add(byte_count(bytes),
+			const auto count = byte_count(bytes);
+			if (events != nullptr) {
+				events->notify_progress(0, count);
+				return;
+			}
+			completed_bytes.fetch_add(count, std::memory_order_relaxed);
+		}
+
+		void apply_progress_event(const parallel_transfer_event& event) {
+			if (event.total_delta > 0) {
+				total_bytes.fetch_add(event.total_delta,
 									  std::memory_order_relaxed);
+			}
+			if (event.completed_delta > 0) {
+				completed_bytes.fetch_add(event.completed_delta,
+										  std::memory_order_relaxed);
+			}
 		}
 
 		void render(bool finish = false) const {
@@ -81,6 +180,9 @@ struct parallel_transfer_progress {
 		std::atomic_size_t total_bytes{0};
 		std::atomic_size_t completed_bytes{0};
 		bool               total_preannounced = false;
+
+	private:
+		parallel_transfer_event_queue* events = nullptr;
 };
 
 inline bool wait_for_transfer_worker(std::future<bool>& worker,

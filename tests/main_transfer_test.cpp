@@ -722,6 +722,37 @@ void test_parallel_receiver_worker_negotiates_task(const fs::path& temp_root) {
 			"parallel receiver worker generated an unexpected OK");
 }
 
+void test_parallel_progress_event_queue_reports_deltas() {
+	sft_detail::parallel_transfer_event_queue events;
+	sft_detail::parallel_transfer_progress    progress(16, true, &events);
+
+	progress.add_completed(5);
+	progress.add_completed(3);
+
+	auto progress_event = events.wait();
+	require(progress_event.kind ==
+				sft_detail::parallel_transfer_event_kind::Progress,
+			"parallel progress queue should report a progress event");
+	require(progress_event.completed_delta == 8,
+			"parallel progress queue should coalesce completed byte deltas");
+	require(progress.completed_bytes.load() == 0,
+			"parallel progress should not update display state before the main "
+			"thread consumes the event");
+
+	progress.apply_progress_event(progress_event);
+	require(progress.completed_bytes.load() == 8,
+			"parallel progress should apply completed byte deltas on the main "
+			"thread");
+
+	events.notify_worker_completed(2);
+	auto completion_event = events.wait();
+	require(completion_event.kind ==
+				sft_detail::parallel_transfer_event_kind::WorkerCompleted,
+			"parallel progress queue should report worker completion events");
+	require(completion_event.worker_index == 2,
+			"parallel progress queue should preserve completed worker index");
+}
+
 void test_parallel_receiver_worker_records_rejected_task(
 	const fs::path& temp_root) {
 	const fs::path output_dir = temp_root / "receive_parallel_reject";
@@ -1083,7 +1114,7 @@ void test_secure_session_rejects_no_common_aead() {
 }
 
 void test_secure_session_accepts_legacy_peer_without_aead_extension() {
-	const auto server_identity = make_test_identity();
+	const auto            server_identity = make_test_identity();
 
 	kotcpp::ServerSession server(server_identity.pub, server_identity.sec);
 
@@ -1101,8 +1132,8 @@ void test_secure_session_accepts_legacy_peer_without_aead_extension() {
 }
 
 void test_secure_session_requires_aead_negotiation() {
-	const auto client_identity = make_test_identity();
-	const auto server_identity = make_test_identity();
+	const auto            client_identity = make_test_identity();
+	const auto            server_identity = make_test_identity();
 
 	kotcpp::ServerSession strict_server(
 		server_identity.pub, server_identity.sec,
@@ -1176,6 +1207,7 @@ int main() {
 		test_send_file_v12_reject_skip(temp_root);
 		test_parallel_sender_worker_negotiates_task(temp_root);
 		test_parallel_receiver_worker_negotiates_task(temp_root);
+		test_parallel_progress_event_queue_reports_deltas();
 		test_parallel_receiver_worker_records_rejected_task(temp_root);
 		test_receive_file_v12_small(temp_root);
 		test_receive_file_v12_resume(temp_root);

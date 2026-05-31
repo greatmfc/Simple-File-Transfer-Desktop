@@ -92,46 +92,49 @@ bool send_file_v13_parallel(
 	}
 
 	if (actual_workers > 0) {
-		BS::light_thread_pool                  pool(actual_workers);
-		std::atomic_size_t                     next_task{0};
-		std::atomic_bool                       cancelled{false};
-		sft_detail::parallel_transfer_progress progress(total_bytes, true);
-		std::vector<std::future<bool>>         futures;
+		BS::light_thread_pool                     pool(actual_workers);
+		std::atomic_size_t                        next_task{0};
+		std::atomic_bool                          cancelled{false};
+		sft_detail::parallel_transfer_event_queue events;
+		sft_detail::parallel_transfer_progress    progress(total_bytes, true,
+														   &events);
+		std::vector<std::future<bool>>            futures;
 		futures.reserve(actual_workers);
 
 		for (std::size_t worker_id = 0; worker_id < actual_workers;
 			 ++worker_id) {
-			futures.push_back(pool.submit_task([&, worker_id]() -> bool {
-				if (options.worker_endpoint ==
-					sft_detail::parallel_worker_endpoint::Listener) {
-					kotcpp::sft_server worker;
-					if (!options.accept_worker(worker, worker_listener,
-											   cancelled)) {
+			sft_detail::submit_parallel_worker_future(
+				pool, futures, events, worker_id, [&, worker_id]() -> bool {
+					if (options.worker_endpoint ==
+						sft_detail::parallel_worker_endpoint::Listener) {
+						kotcpp::sft_server worker;
+						if (!options.accept_worker(worker, worker_listener,
+												   cancelled)) {
+							return false;
+						}
+						if (!sft_detail::receive_parallel_join(
+								worker, session_id, worker_token)) {
+							return false;
+						}
+						return sft_detail::transfer_parallel_sender_tasks(
+							worker, tasks, next_task, worker_id, &progress);
+					}
+
+					kotcpp::sft_client worker;
+					if (!options.connect_worker(worker, worker_port)) {
 						return false;
 					}
-					if (!sft_detail::receive_parallel_join(worker, session_id,
-														   worker_token)) {
+					if (!sft_detail::send_parallel_join(
+							worker, session_id, worker_token, worker_id)) {
 						return false;
 					}
 					return sft_detail::transfer_parallel_sender_tasks(
 						worker, tasks, next_task, worker_id, &progress);
-				}
-
-				kotcpp::sft_client worker;
-				if (!options.connect_worker(worker, worker_port)) {
-					return false;
-				}
-				if (!sft_detail::send_parallel_join(worker, session_id,
-													worker_token, worker_id)) {
-					return false;
-				}
-				return sft_detail::transfer_parallel_sender_tasks(
-					worker, tasks, next_task, worker_id, &progress);
-			}));
+				});
 		}
 
 		const auto workers_ok = sft_detail::wait_for_parallel_futures(
-			futures, cancelled, worker_listener,
+			futures, events, cancelled, worker_listener,
 			"Parallel sender worker failed", &progress);
 		worker_listener.close();
 		if (!workers_ok) {
@@ -248,47 +251,50 @@ void receive_file_v13_parallel(
 	}
 
 	if (actual_workers > 0) {
-		BS::light_thread_pool                  pool(actual_workers);
-		std::atomic_bool                       cancelled{false};
-		sft_detail::parallel_transfer_progress progress(total_bytes,
-														total_preannounced);
-		std::vector<std::future<bool>>         futures;
+		BS::light_thread_pool                     pool(actual_workers);
+		std::atomic_bool                          cancelled{false};
+		sft_detail::parallel_transfer_event_queue events;
+		sft_detail::parallel_transfer_progress    progress(
+            total_bytes, total_preannounced, &events);
+		std::vector<std::future<bool>> futures;
 		futures.reserve(actual_workers);
 
 		for (std::size_t worker_id = 0; worker_id < actual_workers;
 			 ++worker_id) {
-			futures.push_back(pool.submit_task([&, worker_id]() -> bool {
-				if (options.worker_endpoint ==
-					sft_detail::parallel_worker_endpoint::Listener) {
-					kotcpp::sft_server worker;
-					if (!options.accept_worker(worker, worker_listener,
-											   cancelled)) {
+			sft_detail::submit_parallel_worker_future(
+				pool, futures, events, worker_id, [&, worker_id]() -> bool {
+					if (options.worker_endpoint ==
+						sft_detail::parallel_worker_endpoint::Listener) {
+						kotcpp::sft_server worker;
+						if (!options.accept_worker(worker, worker_listener,
+												   cancelled)) {
+							return false;
+						}
+						if (!sft_detail::receive_parallel_join(
+								worker, session_id, worker_token)) {
+							return false;
+						}
+						return sft_detail::receive_parallel_worker_tasks(
+							worker, receive_state, output_root, worker_id,
+							&progress);
+					}
+
+					kotcpp::sft_client worker;
+					if (!options.connect_worker(worker, worker_port)) {
 						return false;
 					}
-					if (!sft_detail::receive_parallel_join(worker, session_id,
-														   worker_token)) {
+					if (!sft_detail::send_parallel_join(
+							worker, session_id, worker_token, worker_id)) {
 						return false;
 					}
 					return sft_detail::receive_parallel_worker_tasks(
 						worker, receive_state, output_root, worker_id,
 						&progress);
-				}
-
-				kotcpp::sft_client worker;
-				if (!options.connect_worker(worker, worker_port)) {
-					return false;
-				}
-				if (!sft_detail::send_parallel_join(worker, session_id,
-													worker_token, worker_id)) {
-					return false;
-				}
-				return sft_detail::receive_parallel_worker_tasks(
-					worker, receive_state, output_root, worker_id, &progress);
-			}));
+				});
 		}
 
 		const auto workers_ok = sft_detail::wait_for_parallel_futures(
-			futures, cancelled, worker_listener,
+			futures, events, cancelled, worker_listener,
 			"Parallel receiver worker failed", &progress);
 		worker_listener.close();
 		if (!workers_ok) {

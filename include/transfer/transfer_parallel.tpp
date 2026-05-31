@@ -212,42 +212,60 @@ parse_parallel_range(const sft12_frame& frame) {
 	return std::pair{*offset, *length};
 }
 
+template <typename Pool, typename Task>
+void submit_parallel_worker_future(Pool&                           pool,
+								   std::vector<std::future<bool>>& futures,
+								   parallel_transfer_event_queue&  events,
+								   std::size_t index, Task&& task) {
+	auto wrapped = [task = std::forward<Task>(task), &events,
+					index]() mutable -> bool {
+		struct completion_guard {
+				parallel_transfer_event_queue& events;
+				std::size_t                    index;
+
+				~completion_guard() {
+					events.notify_worker_completed(index);
+				}
+		} guard{events, index};
+
+		return task();
+	};
+	futures.push_back(pool.submit_task(std::move(wrapped)));
+}
+
 inline bool wait_for_parallel_futures(
-	std::vector<std::future<bool>>& futures, std::atomic_bool& cancelled,
+	std::vector<std::future<bool>>& futures,
+	parallel_transfer_event_queue& events, std::atomic_bool& cancelled,
 	kotcpp::tcp_socket& listener, std::string_view context,
 	parallel_transfer_progress* progress = nullptr) {
 	std::vector<bool> completed(futures.size(), false);
 	std::size_t       remaining = futures.size();
 	bool              all_ok    = true;
 	kotcpp::progress_bar_with_speed(0, 0, true);
+	if (progress != nullptr) {
+		progress->render();
+	}
 	while (remaining > 0) {
-		bool progressed = false;
-		for (std::size_t i = 0; i < futures.size(); ++i) {
-			if (completed[i]) {
-				continue;
-			}
-			if (futures[i].wait_for(std::chrono::milliseconds(0)) !=
-				std::future_status::ready) {
-				continue;
-			}
-
-			completed[i] = true;
-			--remaining;
-			progressed = true;
-			if (!wait_for_transfer_worker(futures[i], context)) {
-				all_ok = false;
-				cancelled.store(true);
-				listener.close();
-			}
+		const auto event = events.wait();
+		if (event.kind == parallel_transfer_event_kind::Progress) {
 			if (progress != nullptr) {
+				progress->apply_progress_event(event);
 				progress->render();
 			}
+			continue;
 		}
-		if (progress != nullptr) {
-			progress->render();
+
+		const auto index = event.worker_index;
+		if (index >= futures.size() || completed[index]) {
+			continue;
 		}
-		if (!progressed) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+		completed[index] = true;
+		--remaining;
+		if (!wait_for_transfer_worker(futures[index], context)) {
+			all_ok = false;
+			cancelled.store(true);
+			listener.close();
 		}
 	}
 	if (progress != nullptr) {
