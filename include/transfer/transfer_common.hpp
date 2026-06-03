@@ -24,6 +24,7 @@
 namespace sft_detail {
 
 inline constexpr kotcpp::SizeType transfer_chunk_size       = 4'194'304;
+inline constexpr kotcpp::SizeType frame_buffer_size         = 1024 * 8;
 inline constexpr std::size_t      transfer_pipeline_depth   = 4;
 inline constexpr kotcpp::SizeType resume_state_update_bytes = 67'108'864;
 inline constexpr std::string_view sft12_version             = "sft1.2";

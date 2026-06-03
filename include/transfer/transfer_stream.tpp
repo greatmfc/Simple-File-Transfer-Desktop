@@ -181,9 +181,9 @@ bool write_exact_to_target(Target& target, const Byte* buffer,
 
 template <kotcpp::AsyncTransferTarget Target>
 kotcpp::Result<std::string> read_control_frame(Target& target) {
-	auto buffer = std::vector<Byte>(transfer_chunk_size);
-	auto task   = target.read(buffer);
-	auto res    = wait_for_completion(task);
+	std::array<Byte, frame_buffer_size> buffer;
+	auto                                task = target.read(buffer);
+	auto                                res  = wait_for_completion(task);
 	if (!res) {
 		return tl::unexpected(res.error());
 	}
