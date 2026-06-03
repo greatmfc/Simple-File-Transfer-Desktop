@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sftclass.hpp"
 #include "transfer_common.hpp"
 
 namespace sft_detail {
@@ -401,8 +402,8 @@ parse_file_request(std::string_view request) {
 
 		kotcpp::SizeType file_size = 0;
 		auto [ptr, ec]             = std::from_chars(
-			fields[i + 1].data(), fields[i + 1].data() + fields[i + 1].size(),
-			file_size);
+            fields[i + 1].data(), fields[i + 1].data() + fields[i + 1].size(),
+            file_size);
 		if (ec != std::errc{} ||
 			ptr != fields[i + 1].data() + fields[i + 1].size()) {
 			return tl::unexpected(kotcpp::make_sft_error(
@@ -415,6 +416,5 @@ parse_file_request(std::string_view request) {
 
 	return entries;
 }
-
 
 } // namespace sft_detail

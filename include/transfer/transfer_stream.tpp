@@ -397,6 +397,7 @@ bool stream_target_range_to_file(
 
 	const auto       chunk_capacity = transfer_chunk_size;
 	kotcpp::SizeType bytes_received = 0;
+	const auto       range_end      = offset + length;
 	if (progress == nullptr) {
 		kotcpp::progress_bar_with_speed(offset, total_size, true);
 	}
@@ -412,18 +413,26 @@ bool stream_target_range_to_file(
 	pipeline.reset();
 	const std::string path(file_path);
 	auto writer      = pipeline_context.io_pool.submit_task([&]() -> bool {
+        kotcpp::SizeType last_state_offset = offset;
         while (auto buffer = pipeline.pop_ready()) {
             if (!write_file_at_exact(output_file, buffer->data.data(),
 										  buffer->size, buffer->offset, path)) {
                 pipeline.cancel();
                 return false;
             }
-            if (auto state_res = store_resume_state(
-                    state_path, buffer->offset + buffer->size);
-                !state_res) {
-                kotcpp::print_error("Fail to update resume state", state_res);
-                pipeline.cancel();
-                return false;
+            const auto completed_offset = buffer->offset + buffer->size;
+            if (completed_offset == range_end ||
+                completed_offset - last_state_offset >=
+                    resume_state_update_bytes) {
+                if (auto state_res =
+                        store_resume_state(state_path, completed_offset);
+                    !state_res) {
+                    kotcpp::print_error("Fail to update resume state",
+											 state_res);
+                    pipeline.cancel();
+                    return false;
+                }
+                last_state_offset = completed_offset;
             }
             pipeline.release_free(std::move(buffer));
         }

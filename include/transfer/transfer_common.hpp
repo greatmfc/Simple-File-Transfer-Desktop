@@ -1,12 +1,11 @@
 #pragma once
 
-#include "../sftclass.hpp"
+#include "io.hpp"
+#include "util.hpp"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <charconv>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -15,27 +14,21 @@
 #include <format>
 #include <future>
 #include <iostream>
-#include <limits>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
-#include <vector>
 #include <sodium.h>
 
 namespace sft_detail {
 
-inline constexpr kotcpp::SizeType transfer_chunk_size     = 4'194'304;
-inline constexpr std::size_t      transfer_pipeline_depth = 4;
-inline constexpr std::string_view sft12_version           = "sft1.2";
-inline constexpr std::string_view sft13_version           = "sft1.3";
-inline constexpr std::string_view sft12_type              = "FIL";
+inline constexpr kotcpp::SizeType transfer_chunk_size       = 4'194'304;
+inline constexpr std::size_t      transfer_pipeline_depth   = 4;
+inline constexpr kotcpp::SizeType resume_state_update_bytes = 67'108'864;
+inline constexpr std::string_view sft12_version             = "sft1.2";
+inline constexpr std::string_view sft13_version             = "sft1.3";
+inline constexpr std::string_view sft12_type                = "FIL";
 
 enum class parallel_transfer_event_kind : uint8_t {
 	Progress,

@@ -7,8 +7,9 @@
 #include <algorithm>
 #include <concepts>
 #include <cstring> // For memset, memcpy
-#include <utility>
 #include <filesystem>
+#include <limits>
+#include <utility>
 namespace fs = std::filesystem;
 
 namespace kotcpp {
@@ -251,6 +252,60 @@ class File : public io_overloads<File> {
 				return tl::unexpected(filesystem_error(ec));
 			}
 			return 0;
+		}
+		ResType preallocate(std::uintmax_t new_size) const {
+			if (new_size == 0) {
+				return 0;
+			}
+			if (_fd == INVALID_HANDLE_VALUE) {
+				return tl::unexpected(
+					make_sft_error("Cannot preallocate unopened file."));
+			}
+#if defined(_WIN32)
+			if (new_size > static_cast<std::uintmax_t>(
+							   std::numeric_limits<LONGLONG>::max())) {
+				return tl::unexpected(make_os_error(ERROR_FILE_TOO_LARGE));
+			}
+
+			LARGE_INTEGER size{};
+			size.QuadPart = static_cast<LONGLONG>(new_size);
+
+			FILE_ALLOCATION_INFO alloc_info{};
+			alloc_info.AllocationSize = size;
+			if (!SetFileInformationByHandle(_fd, FileAllocationInfo,
+											&alloc_info,
+											sizeof(alloc_info))) {
+				const auto error = GetLastError();
+				if (error != ERROR_INVALID_FUNCTION &&
+					error != ERROR_NOT_SUPPORTED) {
+					return tl::unexpected(
+						make_os_error(static_cast<int>(error)));
+				}
+				return resize(new_size);
+			}
+
+			FILE_END_OF_FILE_INFO eof_info{};
+			eof_info.EndOfFile = size;
+			if (!SetFileInformationByHandle(_fd, FileEndOfFileInfo, &eof_info,
+											sizeof(eof_info))) {
+				return tl::unexpected(last_error());
+			}
+			return 0;
+#elif defined(__linux__)
+			if (new_size > static_cast<std::uintmax_t>(
+							   std::numeric_limits<off_t>::max())) {
+				return tl::unexpected(make_os_error(EFBIG));
+			}
+			const auto ret =
+				::posix_fallocate(_fd, 0, static_cast<off_t>(new_size));
+			if (ret == 0) {
+				return 0;
+			}
+			if (ret != EOPNOTSUPP && ret != ENOSYS && ret != EINVAL) {
+				return tl::unexpected(make_os_error(ret));
+			}
+#endif
+			return resize(new_size);
 		}
 		void close() {
 			if (_fd != INVALID_HANDLE_VALUE) {

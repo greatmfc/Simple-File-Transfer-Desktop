@@ -331,6 +331,21 @@ void receive_file_v12(Target& target, std::string_view first_frame) {
 				}
 				continue;
 			}
+			if (length > 0) {
+				if (auto alloc_res = output_file.preallocate(
+						static_cast<std::uintmax_t>(entry->size));
+					!alloc_res) {
+					kotcpp::print_error("Fail to preallocate received file",
+										alloc_res);
+					if (!reject_current(alloc_res.error().message())) {
+						return;
+					}
+					if (!read_next_frame()) {
+						return;
+					}
+					continue;
+				}
+			}
 
 			std::cout << std::format("Receiving file: {}\tSize: {}",
 									 output_path->string(), entry->size)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sftclass.hpp"
 #include "transfer_protocol.hpp"
 #include "transfer_stream.tpp"
 
@@ -684,6 +685,18 @@ bool receive_parallel_worker_tasks(
 				return false;
 			}
 			continue;
+		}
+		if (length > 0) {
+			if (auto alloc_res = output_file.preallocate(
+					static_cast<std::uintmax_t>(entry->size));
+				!alloc_res) {
+				kotcpp::print_error("Fail to preallocate received file",
+									alloc_res);
+				if (!reject_current(alloc_res.error().message())) {
+					return false;
+				}
+				continue;
+			}
 		}
 
 		if (!write_control_frame(target,
