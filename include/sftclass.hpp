@@ -33,6 +33,8 @@ enum {
 #define SFT_FIL_NAME_START 2
 #define SFT_FIL_SIZE_START 3
 
+inline constexpr std::size_t ciphertext_buffer_size = 4'194'304 * 2;
+
 struct sft_respond_struct {
 		string      peer_name;
 		sockaddr_in peer_addr;
@@ -127,7 +129,7 @@ inline std::string vector_to_string(const std::vector<uint8_t>& v) {
 
 class sft_identity {
 	private:
-		SecureKey _sec;
+		SecureKey   _sec;
 		PubKeyArray _pub{};
 
 	public:
@@ -179,19 +181,19 @@ class sft_identity {
 			return {};
 		}
 
-		std::unique_ptr<SessionBase> create_client_session(
-			const SecureAeadAlgorithmList& algorithms =
-				default_secure_aead_algorithms(),
-			bool require_aead_negotiation = false) const {
+		std::unique_ptr<SessionBase>
+		create_client_session(const SecureAeadAlgorithmList& algorithms =
+								  default_secure_aead_algorithms(),
+							  bool require_aead_negotiation = false) const {
 			ScopedReadAccess r(_sec);
 			return std::make_unique<ClientSession>(
 				_pub, _sec.data(), algorithms, require_aead_negotiation);
 		}
 
-		std::unique_ptr<SessionBase> create_server_session(
-			const SecureAeadAlgorithmList& algorithms =
-				default_secure_aead_algorithms(),
-			bool require_aead_negotiation = false) const {
+		std::unique_ptr<SessionBase>
+		create_server_session(const SecureAeadAlgorithmList& algorithms =
+								  default_secure_aead_algorithms(),
+							  bool require_aead_negotiation = false) const {
 			ScopedReadAccess r(_sec);
 			return std::make_unique<ServerSession>(
 				_pub, _sec.data(), algorithms, require_aead_negotiation);
@@ -240,7 +242,7 @@ class known_hosts_store {
 		}
 
 		bool ensure_trusted(const std::string& fingerprint,
-							std::string_view accepted_message = {}) {
+							std::string_view   accepted_message = {}) {
 			if (this->contains(fingerprint)) {
 				return true;
 			}
@@ -272,11 +274,20 @@ class secure_channel : public io_overloads<secure_channel> {
 	private:
 		tcp_socket                   _conn;
 		std::unique_ptr<SessionBase> _session;
+		// Potential security issue of reuse buffer ?
+		std::unique_ptr<uint8_t[]>   _ciphertext;
+		kotcpp::SizeType             _ciphertext_len = ciphertext_buffer_size;
 
 	public:
 		using IoResult = Task<ResType>;
 		using io_overloads<secure_channel>::read;
 		using io_overloads<secure_channel>::write;
+
+		secure_channel(kotcpp::SizeType size = ciphertext_buffer_size) {
+			_ciphertext_len = size;
+			_ciphertext =
+				std::make_unique_for_overwrite<uint8_t[]>(_ciphertext_len);
+		}
 
 		void set_session(std::unique_ptr<SessionBase> session) {
 			_session = std::move(session);
@@ -308,8 +319,8 @@ class secure_channel : public io_overloads<secure_channel> {
 
 		IoResult write(const Byte* buf, SizeType nbytes) const {
 			if (!_conn.available() || !_session) {
-				co_return tl::unexpected(
-					channel_error("Cannot write: secure channel is not connected."));
+				co_return tl::unexpected(channel_error(
+					"Cannot write: secure channel is not connected."));
 			}
 
 			std::vector<uint8_t> ciphertext;
@@ -357,8 +368,8 @@ class secure_channel : public io_overloads<secure_channel> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return tl::unexpected(
-						channel_error("Connection closed while writing secure frame."));
+					co_return tl::unexpected(channel_error(
+						"Connection closed while writing secure frame."));
 				}
 				bytesWritten += ret.value();
 				bytesLeft -= ret.value();
@@ -369,8 +380,8 @@ class secure_channel : public io_overloads<secure_channel> {
 
 		IoResult read(Byte* buf, SizeType nbytes) const {
 			if (!_conn.available() || !_session) {
-				co_return tl::unexpected(
-					channel_error("Cannot read: secure channel is not connected."));
+				co_return tl::unexpected(channel_error(
+					"Cannot read: secure channel is not connected."));
 			}
 
 			SizeType headerBytesRead = 0, frameSize = 0;
@@ -387,26 +398,27 @@ class secure_channel : public io_overloads<secure_channel> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return tl::unexpected(channel_error(
-						"Connection closed while reading secure frame length."));
+					co_return tl::unexpected(
+						channel_error("Connection closed while reading secure "
+									  "frame length."));
 				}
 				headerBytesRead += ret.value();
 			}
 
 			frameSize = _session->decrypt_frame_length(encryptedFrameSize);
-			const auto encryption_overhead = static_cast<SizeType>(
-				_session->encryption_additional_bytes());
-			if (frameSize > nbytes + encryption_overhead ||
-				frameSize == 0) {
-				co_return tl::unexpected(channel_error(std::format(
-					"Incoming secure frame size {} does not fit destination buffer {}.",
-					frameSize, nbytes)));
+			const auto encryption_overhead =
+				static_cast<SizeType>(_session->encryption_additional_bytes());
+			if (frameSize > nbytes + encryption_overhead || frameSize == 0 ||
+				frameSize > _ciphertext_len) {
+				co_return tl::unexpected(channel_error(
+					std::format("Incoming secure frame size {} does not fit "
+								"destination buffer {}.",
+								frameSize, nbytes)));
 			}
 
-			std::vector<uint8_t> ciphertext(frameSize);
 			SizeType bytesRead = 0, lastRead = encryption_overhead;
 			while (bytesRead < frameSize) {
-				auto ret = _conn.read(ciphertext.data() + bytesRead,
+				auto ret = _conn.read(_ciphertext.get() + bytesRead,
 									  frameSize - bytesRead);
 				[[likely]] if (!ret) {
 					[[likely]] if (ret.error() == WSAEWOULDBLOCK) {
@@ -420,14 +432,13 @@ class secure_channel : public io_overloads<secure_channel> {
 					co_return ret;
 				}
 				[[unlikely]] if (ret.value() == 0) {
-					co_return tl::unexpected(
-						channel_error("Connection closed while reading secure frame."));
+					co_return tl::unexpected(channel_error(
+						"Connection closed while reading secure frame."));
 				}
 				bytesRead += ret.value();
 			}
 
-			if (auto ret = _session->decrypt(ciphertext.data(),
-											 ciphertext.size(), (uint8_t*)buf);
+			if (auto ret = _session->decrypt(_ciphertext.get(), frameSize, buf);
 				!ret) {
 				co_return tl::unexpected(channel_error(
 					std::format("Cannot decrypt incoming secure frame: {}",
@@ -456,12 +467,12 @@ class secure_channel : public io_overloads<secure_channel> {
 
 class sft_client : public io_overloads<sft_client> {
 	private:
-		sft_identity           _identity;
-		known_hosts_store      _known_hosts;
-		secure_channel         _channel;
+		sft_identity            _identity;
+		known_hosts_store       _known_hosts;
+		secure_channel          _channel;
 		SecureAeadAlgorithmList _aead_algorithms =
 			default_secure_aead_algorithms();
-		bool                   _require_aead_negotiation = false;
+		bool _require_aead_negotiation = false;
 
 		void reset_session() {
 			_channel.set_session(_identity.create_client_session(
@@ -527,7 +538,7 @@ class sft_client : public io_overloads<sft_client> {
 
 		ResType connect(const sockaddr_in& addr) {
 			this->reset_session();
-			auto& conn = _channel.socket();
+			auto& conn    = _channel.socket();
 			auto& session = _channel.session();
 			if (!conn.available()) {
 				if (auto ret = conn.initialize(); !ret) {
@@ -538,7 +549,7 @@ class sft_client : public io_overloads<sft_client> {
 			if (!ret) {
 				return ret;
 			}
-			std::size_t               buf_size = generate_random_port(128, 1024);
+			std::size_t buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf;
 			randombytes_buf(buf.data(), buf_size);
 			auto hello_msg1 = session.step1_generate_hello();
@@ -559,16 +570,18 @@ class sft_client : public io_overloads<sft_client> {
 				conn.close();
 				return read_res;
 			}
-			auto res = session.step2_handle_response(
-				buf, [&](const std::string& fp) {
-					return _known_hosts.ensure_trusted(
-						fp, "Please check the other side to accept the connection.");
-				});
+			auto res = session.step2_handle_response(buf, [&](const std::string&
+																  fp) {
+				return _known_hosts.ensure_trusted(
+					fp,
+					"Please check the other side to accept the connection.");
+			});
 			if (!res) {
 				conn.close();
-				return tl::unexpected(make_sft_error(std::format(
-					"Secure client handshake failed while handling server response: {}",
-					res.error().message())));
+				return tl::unexpected(make_sft_error(
+					std::format("Secure client handshake failed while handling "
+								"server response: {}",
+								res.error().message())));
 			}
 			std::vector<uint8_t> client_response = std::move(res.value());
 			buf_size = generate_random_port(128, 1024);
@@ -591,16 +604,15 @@ class sft_client : public io_overloads<sft_client> {
 				return read_res;
 			}
 			std::vector<uint8_t> last_ok;
-			if (auto decrypt_res =
-					session.decrypt(
-						buf.data(),
-						static_cast<SizeType>(
-							1 + session.encryption_additional_bytes()));
+			if (auto decrypt_res = session.decrypt(
+					buf.data(), static_cast<SizeType>(
+									1 + session.encryption_additional_bytes()));
 				!decrypt_res) {
 				conn.close();
-				return tl::unexpected(make_sft_error(std::format(
-					"Secure client handshake failed: cannot decrypt final server acknowledgement: {}",
-					decrypt_res.error().message())));
+				return tl::unexpected(make_sft_error(
+					std::format("Secure client handshake failed: cannot "
+								"decrypt final server acknowledgement: {}",
+								decrypt_res.error().message())));
 			}
 			else {
 				last_ok = std::move(decrypt_res.value());
@@ -633,12 +645,12 @@ class sft_client : public io_overloads<sft_client> {
 
 class sft_server : public io_overloads<sft_server> {
 	private:
-		sft_identity           _identity;
-		known_hosts_store      _known_hosts;
-		secure_channel         _channel;
+		sft_identity            _identity;
+		known_hosts_store       _known_hosts;
+		secure_channel          _channel;
 		SecureAeadAlgorithmList _aead_algorithms =
 			default_secure_aead_algorithms();
-		bool                   _require_aead_negotiation = false;
+		bool _require_aead_negotiation = false;
 
 		void reset_session() {
 			_channel.set_session(_identity.create_server_session(
@@ -709,9 +721,9 @@ class sft_server : public io_overloads<sft_server> {
 				return tl::unexpected(accept_res.error());
 			}
 			_channel.attach_socket(std::move(*accept_res));
-			auto& conn = _channel.socket();
-			auto& session = _channel.session();
-			std::size_t               buf_size = generate_random_port(128, 1024);
+			auto&       conn     = _channel.socket();
+			auto&       session  = _channel.session();
+			std::size_t buf_size = generate_random_port(128, 1024);
 			std::array<uint8_t, 1024> buf{};
 			conn.set_blocking();
 			auto ret = conn.read(buf);
@@ -720,9 +732,10 @@ class sft_server : public io_overloads<sft_server> {
 			}
 			auto server_response = session.step1_handle_hello(buf);
 			if (!server_response) {
-				return tl::unexpected(make_sft_error(std::format(
-					"Secure server handshake failed while handling client hello: {}",
-					server_response.error().message())));
+				return tl::unexpected(make_sft_error(
+					std::format("Secure server handshake failed while handling "
+								"client hello: {}",
+								server_response.error().message())));
 			}
 			randombytes_buf(buf.data(), buf_size);
 			if (server_response->size() > buf.size()) {
@@ -733,7 +746,7 @@ class sft_server : public io_overloads<sft_server> {
 			buf_size = std::max(buf_size, server_response->size());
 			std::copy(server_response->begin(), server_response->end(),
 					  buf.begin());
-				ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
+			ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
 			if (!ret) {
 				return ret;
 			}
@@ -747,17 +760,19 @@ class sft_server : public io_overloads<sft_server> {
 				});
 			if (!res) {
 				conn.close();
-				return tl::unexpected(make_sft_error(std::format(
-					"Secure server handshake failed while authenticating client: {}",
-					res.error().message())));
+				return tl::unexpected(make_sft_error(
+					std::format("Secure server handshake failed while "
+								"authenticating client: {}",
+								res.error().message())));
 			}
 			uint8_t ok     = 1;
 			auto    ok_msg = session.encrypt(&ok, sizeof(ok));
 			if (!ok_msg) {
 				conn.close();
-				return tl::unexpected(make_sft_error(std::format(
-					"Secure server handshake failed: cannot encrypt final acknowledgement: {}",
-					ok_msg.error().message())));
+				return tl::unexpected(make_sft_error(
+					std::format("Secure server handshake failed: cannot "
+								"encrypt final acknowledgement: {}",
+								ok_msg.error().message())));
 			}
 			buf_size = generate_random_port(128, 1024);
 			randombytes_buf(buf.data(), buf_size);
@@ -768,7 +783,7 @@ class sft_server : public io_overloads<sft_server> {
 			}
 			buf_size = std::max(buf_size, ok_msg->size());
 			std::copy(ok_msg->begin(), ok_msg->end(), buf.begin());
-				ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
+			ret = conn.write(buf.data(), static_cast<SizeType>(buf_size));
 			if (!ret) {
 				return ret;
 			}

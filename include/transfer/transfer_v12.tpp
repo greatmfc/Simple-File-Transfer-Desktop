@@ -349,7 +349,7 @@ void receive_file_v12(Target& target, std::string_view first_frame) {
 
 			std::cout << std::format("Receiving file: {}\tSize: {}",
 									 output_path->string(), entry->size)
-					  << std::endl;
+					  << '\n';
 			if (!sft_detail::write_control_frame(
 					target,
 					sft_detail::build_sft12_ack(entry->id, offset, length))) {

@@ -72,13 +72,11 @@ enum class SecureAeadError : uint8_t {
 
 using SecureAeadAlgorithmList = std::vector<SecureAeadAlgorithm>;
 
-inline Error make_secure_aead_error(SecureAeadError code,
-									std::string message) {
-	return make_sft_error(SftErrorDomain::SecureAead, code,
-						  std::move(message));
+inline Error make_secure_aead_error(SecureAeadError code, std::string message) {
+	return make_sft_error(SftErrorDomain::SecureAead, code, std::move(message));
 }
 
-inline bool is_secure_aead_error(const Error& error,
+inline bool is_secure_aead_error(const Error&    error,
 								 SecureAeadError code) noexcept {
 	return error.is_sft_error(SftErrorDomain::SecureAead, code);
 }
@@ -92,17 +90,17 @@ inline bool is_legacy_aead_negotiation_error(const Error& error) noexcept {
 		   is_secure_aead_error(error, SecureAeadError::InvalidMagic);
 }
 
-using SecureAeadEncryptFn     = int (*)(unsigned char*, unsigned long long*,
-                                    const unsigned char*, unsigned long long,
-                                    const unsigned char*, unsigned long long,
-                                    const unsigned char*, const unsigned char*,
-                                    const unsigned char*);
+using SecureAeadEncryptFn = int (*)(unsigned char*, unsigned long long*,
+									const unsigned char*, unsigned long long,
+									const unsigned char*, unsigned long long,
+									const unsigned char*, const unsigned char*,
+									const unsigned char*);
 
-using SecureAeadDecryptFn     = int (*)(unsigned char*, unsigned long long*,
-                                    unsigned char*, const unsigned char*,
-                                    unsigned long long, const unsigned char*,
-                                    unsigned long long, const unsigned char*,
-                                    const unsigned char*);
+using SecureAeadDecryptFn = int (*)(unsigned char*, unsigned long long*,
+									unsigned char*, const unsigned char*,
+									unsigned long long, const unsigned char*,
+									unsigned long long, const unsigned char*,
+									const unsigned char*);
 
 struct SecureAeadDescriptor {
 		SecureAeadAlgorithm algorithm;
@@ -205,10 +203,9 @@ choose_secure_aead_algorithm(const SecureAeadAlgorithmList& local_preference,
 			return algorithm;
 		}
 	}
-	return tl::unexpected(
-		make_secure_aead_error(
-			SecureAeadError::NoMutualAlgorithm,
-			"No supported AEAD algorithm found between peers."));
+	return tl::unexpected(make_secure_aead_error(
+		SecureAeadError::NoMutualAlgorithm,
+		"No supported AEAD algorithm found between peers."));
 }
 
 inline constexpr std::array<uint8_t, 8> AeadNegotiationMagic{
@@ -289,17 +286,17 @@ inline Result<SecureAeadAlgorithmList>
 parse_aead_offer_extension(const std::vector<uint8_t>& extension) {
 	if (extension.size() < AeadExtensionHeaderBytes ||
 		extension[8] != AeadOfferExtensionType) {
-		return tl::unexpected(make_secure_aead_error(
-			SecureAeadError::MalformedExtension,
-			"Receive malformed AEAD offer extension."));
+		return tl::unexpected(
+			make_secure_aead_error(SecureAeadError::MalformedExtension,
+								   "Receive malformed AEAD offer extension."));
 	}
 
 	const auto payload_size = static_cast<size_t>(extension[9]);
 	if (extension.size() != AeadExtensionHeaderBytes + payload_size ||
 		payload_size == 0) {
-		return tl::unexpected(make_secure_aead_error(
-			SecureAeadError::MalformedExtension,
-			"Receive malformed AEAD offer extension."));
+		return tl::unexpected(
+			make_secure_aead_error(SecureAeadError::MalformedExtension,
+								   "Receive malformed AEAD offer extension."));
 	}
 
 	SecureAeadAlgorithmList algorithms;
@@ -849,9 +846,9 @@ class ClientSession : public SessionBase {
 			const uint8_t* s_id_pk  = server_msg + crypto_kx_PUBLICKEYBYTES;
 			const uint8_t* s_sig    = s_id_pk + crypto_sign_PUBLICKEYBYTES;
 
-			auto selection_extension_res = read_aead_extension_bytes(
-				server_msg, len, ServerResponseFixedBytes,
-				AeadSelectedExtensionType);
+			auto           selection_extension_res = read_aead_extension_bytes(
+                server_msg, len, ServerResponseFixedBytes,
+                AeadSelectedExtensionType);
 			if (!selection_extension_res) {
 				if (!is_legacy_aead_negotiation_error(
 						selection_extension_res.error()) ||
