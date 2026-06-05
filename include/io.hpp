@@ -273,8 +273,7 @@ class File : public io_overloads<File> {
 			FILE_ALLOCATION_INFO alloc_info{};
 			alloc_info.AllocationSize = size;
 			if (!SetFileInformationByHandle(_fd, FileAllocationInfo,
-											&alloc_info,
-											sizeof(alloc_info))) {
+											&alloc_info, sizeof(alloc_info))) {
 				const auto error = GetLastError();
 				if (error != ERROR_INVALID_FUNCTION &&
 					error != ERROR_NOT_SUPPORTED) {

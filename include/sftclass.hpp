@@ -33,7 +33,8 @@ enum {
 #define SFT_FIL_NAME_START 2
 #define SFT_FIL_SIZE_START 3
 
-inline constexpr std::size_t ciphertext_buffer_size = 4'194'304 * 2;
+// The size of this buffer should be at least 4MB + AEAD overhead.
+inline constexpr std::size_t ciphertext_buffer_size = 4'194'304 + 64;
 
 struct sft_respond_struct {
 		string      peer_name;
@@ -317,29 +318,35 @@ class secure_channel : public io_overloads<secure_channel> {
 			return make_sft_error(std::move(message));
 		}
 
+		// Yields and returns the number of bytes written since last resume.
 		IoResult write(const Byte* buf, SizeType nbytes) const {
 			if (!_conn.available() || !_session) {
 				co_return tl::unexpected(channel_error(
 					"Cannot write: secure channel is not connected."));
 			}
 
-			std::vector<uint8_t> ciphertext;
-			if (auto ret = _session->encrypt(buf, nbytes); !ret) {
+			const auto overhead =
+				static_cast<SizeType>(_session->encryption_additional_bytes());
+
+			if (nbytes < 0 || nbytes > _ciphertext_len - overhead) {
+				co_return tl::unexpected(channel_error(
+					"Outgoing secure frame does not fit ciphertext buffer."));
+			}
+
+			auto ret = _session->encrypt(buf, nbytes, _ciphertext.get());
+			if (!ret) {
 				co_return tl::unexpected(channel_error(
 					std::format("Cannot encrypt outgoing secure frame: {}",
 								ret.error().message())));
 			}
-			else {
-				ciphertext = std::move(ret.value());
-			}
 
-			uint64_t frameSize = ciphertext.size();
+			uint64_t frameSize = *ret;
 			uint64_t encryptedFrameSize =
 				_session->encrypt_frame_length(frameSize);
 
 		write_again:
-			auto ret = _conn.write((const Byte*)&encryptedFrameSize,
-								   sizeof(encryptedFrameSize));
+			ret = _conn.write((const Byte*)&encryptedFrameSize,
+							  sizeof(encryptedFrameSize));
 			if (!ret) {
 				if (ret.error() == WSAEWOULDBLOCK) {
 					goto write_again;
@@ -351,11 +358,11 @@ class secure_channel : public io_overloads<secure_channel> {
 					"Failed to write complete secure frame length."));
 			}
 
-			SizeType bytesWritten = 0, bytesLeft = ciphertext.size(),
+			SizeType bytesWritten = 0, bytesLeft = frameSize,
 					 lastWritten = static_cast<SizeType>(
 						 _session->encryption_additional_bytes());
 			while (bytesLeft > 0) {
-				ret = _conn.write(ciphertext.data() + bytesWritten, bytesLeft);
+				ret = _conn.write(_ciphertext.get() + bytesWritten, bytesLeft);
 				[[likely]] if (!ret) {
 					[[likely]] if (ret.error() == WSAEWOULDBLOCK) {
 						[[likely]] if (bytesWritten >= lastWritten) {
@@ -378,6 +385,7 @@ class secure_channel : public io_overloads<secure_channel> {
 			co_return bytesWritten - lastWritten;
 		}
 
+		// Yields and returns the number of bytes read since last resume.
 		IoResult read(Byte* buf, SizeType nbytes) const {
 			if (!_conn.available() || !_session) {
 				co_return tl::unexpected(channel_error(
