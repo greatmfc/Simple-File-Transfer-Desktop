@@ -216,7 +216,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         $<$<BOOL:${ENABLE_PROFILING}>:${GNULIKE_PROFILE_FLAGS}>
     )
     target_link_options(${PROJECT_NAME} PRIVATE
-        $<$<AND:$<NOT:$<CONFIG:Debug>>,$<NOT:$<BOOL:${ENABLE_PROFILING}>>>:
+        $<$<NOT:$<CONFIG:Debug>>:
         -flto
         -static
         >
