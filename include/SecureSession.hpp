@@ -51,7 +51,7 @@ inline std::string get_fingerprint(const uint8_t* public_key, size_t len) {
 	sodium_bin2base64(b64, sizeof(b64), hash, sizeof(hash),
 					  sodium_base64_VARIANT_ORIGINAL);
 
-	return std::string(b64);
+	return {b64};
 }
 
 enum class SecureAeadAlgorithm : uint8_t {
