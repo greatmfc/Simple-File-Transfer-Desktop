@@ -354,8 +354,9 @@ int main(int argc, char* argv[]) {
 		udp_socket usocket;
 		if (!usocket.initialize(AF_INET, SOCK_DGRAM, IPPROTO_UDP) ||
 			!usocket.bind(bind_ip, UDP_PORT)) {
-			print_error("UDP setup failed");
-			return 1;
+			print_error("UDP setup failed, UDP functions will be disabled");
+			usocket.close();
+			// return 1;
 		}
 		optval_t optval = 1;
 		(void)usocket.setsockopt(SOL_SOCKET, SO_BROADCAST, &optval,
