@@ -157,7 +157,7 @@ struct parallel_transfer_progress {
 			}
 		}
 
-		void render(bool finish = false) const {
+		void render(bool finish = false) {
 			const auto total = total_bytes.load(std::memory_order_relaxed);
 			if (total == 0) {
 				return;
@@ -168,7 +168,10 @@ struct parallel_transfer_progress {
 			if (!finish && completed >= total) {
 				completed = total - 1;
 			}
-			kotcpp::progress_bar_with_speed(completed, total);
+			[[likely]] if (last_render.valid()) { last_render.wait(); }
+			last_render = pool.submit_task([completed, total]() {
+				kotcpp::progress_bar_with_speed(completed, total);
+			});
 		}
 
 		std::atomic_size_t total_bytes{0};
@@ -176,6 +179,8 @@ struct parallel_transfer_progress {
 		bool               total_preannounced = false;
 
 	private:
+		BS::light_thread_pool          pool{1};
+		std::future<void>              last_render;
 		parallel_transfer_event_queue* events = nullptr;
 };
 

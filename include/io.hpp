@@ -296,12 +296,12 @@ class File : public io_overloads<File> {
 				return tl::unexpected(make_os_error(EFBIG));
 			}
 			const auto ret =
-				::posix_fallocate(_fd, 0, static_cast<off_t>(new_size));
+				::fallocate(_fd, 0, 0, static_cast<off_t>(new_size));
 			if (ret == 0) {
 				return 0;
 			}
-			if (ret != EOPNOTSUPP && ret != ENOSYS && ret != EINVAL) {
-				return tl::unexpected(make_os_error(ret));
+			if (errno != EOPNOTSUPP && errno != ENOSYS) {
+				return tl::unexpected(last_error());
 			}
 #endif
 			return resize(new_size);

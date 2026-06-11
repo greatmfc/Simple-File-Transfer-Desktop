@@ -231,7 +231,7 @@ bool stream_file_to_target(Target& target, kotcpp::File& file,
 
             const auto chunk_size =
                 std::min(chunk_capacity, file_size - bytes_read);
-            if (!read_file_exact(file, buffer->data.data(), chunk_size, path)) {
+            if (!read_file_exact(file, buffer->data.get(), chunk_size, path)) {
                 pipeline.cancel();
                 return false;
             }
@@ -248,7 +248,7 @@ bool stream_file_to_target(Target& target, kotcpp::File& file,
 
 	bool transfer_ok = true;
 	while (auto buffer = pipeline.pop_ready()) {
-		auto write_task = target.write(buffer->data.data(), buffer->size);
+		auto write_task = target.write(buffer->data.get(), buffer->size);
 		if (!finish_exact_transfer(
 				write_task, buffer->size, file_size, bytes_sent,
 				std::format("Fail to send file: {}", file_path),
@@ -301,7 +301,7 @@ bool stream_file_range_to_target(
 	}
 
 	if (length == 0) {
-		// kotcpp::progress_bar_with_speed(file_size, file_size, true);
+		kotcpp::progress_bar_with_speed(file_size, file_size, true);
 		return true;
 	}
 
@@ -318,7 +318,7 @@ bool stream_file_range_to_target(
 
             const auto chunk_size =
                 std::min(chunk_capacity, length - bytes_read);
-            if (!read_file_at_exact(file, buffer->data.data(), chunk_size,
+            if (!read_file_at_exact(file, buffer->data.get(), chunk_size,
 										 offset + bytes_read, path)) {
                 pipeline.cancel();
                 return false;
@@ -337,7 +337,7 @@ bool stream_file_range_to_target(
 	bool transfer_ok = true;
 	kotcpp::SizeType reported = 0;
 	while (auto buffer = pipeline.pop_ready()) {
-		auto write_task = target.write(buffer->data.data(), buffer->size);
+		auto write_task = target.write(buffer->data.get(), buffer->size);
 		if (!finish_exact_transfer(
 				write_task, buffer->size, file_size, bytes_sent,
 				std::format("Fail to send file: {}", file_path),
@@ -415,7 +415,7 @@ bool stream_target_range_to_file(
 	auto writer      = pipeline_context.io_pool.submit_task([&]() -> bool {
         kotcpp::SizeType last_state_offset = offset;
         while (auto buffer = pipeline.pop_ready()) {
-            if (!write_file_at_exact(output_file, buffer->data.data(),
+            if (!write_file_at_exact(output_file, buffer->data.get(),
 										  buffer->size, buffer->offset, path)) {
                 pipeline.cancel();
                 return false;
@@ -452,7 +452,7 @@ bool stream_target_range_to_file(
 			std::min(chunk_capacity, length - bytes_received);
 		buffer->size   = chunk_size;
 		buffer->offset = offset + bytes_received;
-		auto read_task = target.read(buffer->data.data(), chunk_size);
+		auto read_task = target.read(buffer->data.get(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, total_size, bytes_received,
 				std::format("Error while trying to receive from peer: {}",
@@ -504,8 +504,8 @@ bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 	const std::string path(file_path);
 	auto writer      = pipeline_context.io_pool.submit_task([&]() -> bool {
         while (auto buffer = pipeline.pop_ready()) {
-            if (!write_file_exact(output_file, buffer->data.data(),
-									   buffer->size, path)) {
+            if (!write_file_exact(output_file, buffer->data.get(), buffer->size,
+									   path)) {
                 pipeline.cancel();
                 return false;
             }
@@ -525,7 +525,7 @@ bool stream_target_to_file(Target& target, kotcpp::File& output_file,
 		const auto chunk_size =
 			std::min(chunk_capacity, file_size - bytes_received);
 		buffer->size   = chunk_size;
-		auto read_task = target.read(buffer->data.data(), chunk_size);
+		auto read_task = target.read(buffer->data.get(), chunk_size);
 		if (!finish_exact_transfer(
 				read_task, chunk_size, file_size, bytes_received,
 				std::format("Error while trying to receive from peer: {}",
