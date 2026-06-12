@@ -32,6 +32,7 @@ inline constexpr std::string_view sft13_version             = "sft1.3";
 inline constexpr std::string_view sft12_type                = "FIL";
 
 enum class parallel_transfer_event_kind : uint8_t {
+	PayloadStarted,
 	Progress,
 	WorkerCompleted
 };
@@ -45,6 +46,23 @@ struct parallel_transfer_event {
 };
 
 struct parallel_transfer_event_queue {
+		void notify_payload_started() {
+			{
+				std::lock_guard lock(mutex);
+				if (payload_started) {
+					return;
+				}
+				payload_started               = true;
+				payload_started_pending       = true;
+				payload_start_total_delta     = pending_total_delta;
+				payload_start_completed_delta = pending_completed_delta;
+				pending_total_delta           = 0;
+				pending_completed_delta       = 0;
+				progress_pending              = false;
+			}
+			cv.notify_one();
+		}
+
 		void notify_progress(std::size_t total_delta,
 							 std::size_t completed_delta) {
 			if (total_delta == 0 && completed_delta == 0) {
@@ -70,8 +88,22 @@ struct parallel_transfer_event_queue {
 		parallel_transfer_event wait() {
 			std::unique_lock lock(mutex);
 			cv.wait(lock, [&]() {
-				return progress_pending || !completed_workers.empty();
+				return payload_started_pending || progress_pending ||
+					   !completed_workers.empty();
 			});
+
+			if (payload_started_pending) {
+				const auto total_delta        = payload_start_total_delta;
+				const auto completed_delta    = payload_start_completed_delta;
+				payload_start_total_delta     = 0;
+				payload_start_completed_delta = 0;
+				payload_started_pending       = false;
+				return {
+					.kind        = parallel_transfer_event_kind::PayloadStarted,
+					.total_delta = total_delta,
+					.completed_delta = completed_delta,
+				};
+			}
 
 			if (progress_pending) {
 				const auto total_delta     = pending_total_delta;
@@ -104,9 +136,13 @@ struct parallel_transfer_event_queue {
 		std::mutex              mutex;
 		std::condition_variable cv;
 		std::deque<std::size_t> completed_workers;
-		std::size_t             pending_total_delta     = 0;
-		std::size_t             pending_completed_delta = 0;
-		bool                    progress_pending        = false;
+		std::size_t             pending_total_delta           = 0;
+		std::size_t             pending_completed_delta       = 0;
+		std::size_t             payload_start_total_delta     = 0;
+		std::size_t             payload_start_completed_delta = 0;
+		bool                    payload_started               = false;
+		bool                    payload_started_pending       = false;
+		bool                    progress_pending              = false;
 };
 
 struct parallel_transfer_progress {
@@ -146,6 +182,12 @@ struct parallel_transfer_progress {
 			completed_bytes.fetch_add(count, std::memory_order_relaxed);
 		}
 
+		void begin_payload() {
+			if (events != nullptr) {
+				events->notify_payload_started();
+			}
+		}
+
 		void apply_progress_event(const parallel_transfer_event& event) {
 			if (event.total_delta > 0) {
 				total_bytes.fetch_add(event.total_delta,
@@ -155,6 +197,16 @@ struct parallel_transfer_progress {
 				completed_bytes.fetch_add(event.completed_delta,
 										  std::memory_order_relaxed);
 			}
+		}
+
+		void restart_render_timer() {
+			const auto total = total_bytes.load(std::memory_order_relaxed);
+			auto completed   = completed_bytes.load(std::memory_order_relaxed);
+			completed        = std::min(completed, total);
+			[[likely]] if (last_render.valid()) { last_render.wait(); }
+			last_render = pool.submit_task([completed, total]() {
+				kotcpp::progress_bar_with_speed(completed, total, true);
+			});
 		}
 
 		void render(bool finish = false) {

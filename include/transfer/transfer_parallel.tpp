@@ -240,18 +240,26 @@ inline bool wait_for_parallel_futures(
 	kotcpp::tcp_socket& listener, std::string_view context,
 	parallel_transfer_progress* progress = nullptr) {
 	std::vector<bool> completed(futures.size(), false);
-	std::size_t       remaining = futures.size();
-	bool              all_ok    = true;
-	kotcpp::progress_bar_with_speed(0, 0, true);
-	if (progress != nullptr) {
-		progress->render();
-	}
+	std::size_t       remaining       = futures.size();
+	bool              all_ok          = true;
+	bool              payload_started = false;
 	while (remaining > 0) {
 		const auto event = events.wait();
+		if (event.kind == parallel_transfer_event_kind::PayloadStarted) {
+			if (progress != nullptr) {
+				progress->apply_progress_event(event);
+				progress->restart_render_timer();
+				progress->render();
+			}
+			payload_started = true;
+			continue;
+		}
 		if (event.kind == parallel_transfer_event_kind::Progress) {
 			if (progress != nullptr) {
 				progress->apply_progress_event(event);
-				progress->render();
+				if (payload_started) {
+					progress->render();
+				}
 			}
 			continue;
 		}
@@ -270,6 +278,9 @@ inline bool wait_for_parallel_futures(
 		}
 	}
 	if (progress != nullptr) {
+		if (!payload_started) {
+			progress->restart_render_timer();
+		}
 		progress->render(all_ok);
 	}
 	return all_ok;
@@ -370,6 +381,9 @@ bool transfer_parallel_sender_tasks(
 				return false;
 			}
 
+			if (progress != nullptr) {
+				progress->begin_payload();
+			}
 			if (!stream_file_range_to_target(target, file, entry.remote_path,
 											 offset, length, pipeline_context,
 											 progress)) {
@@ -708,13 +722,17 @@ bool receive_parallel_worker_tasks(
 		if (progress != nullptr) {
 			progress->add_completed(offset);
 		}
-		if (length > 0 &&
-			!stream_target_range_to_file(
-				target, output_file, entry->path, offset, length, entry->size,
-				*state_path, pipeline_context, progress)) {
-			record_parallel_receive_failure(receive_state, *entry,
-											"Payload receive/write failed.");
-			return false;
+		if (length > 0) {
+			if (progress != nullptr) {
+				progress->begin_payload();
+			}
+			if (!stream_target_range_to_file(
+					target, output_file, entry->path, offset, length,
+					entry->size, *state_path, pipeline_context, progress)) {
+				record_parallel_receive_failure(
+					receive_state, *entry, "Payload receive/write failed.");
+				return false;
+			}
 		}
 
 		if (!receive_parallel_fin(target, entry->id, length)) {

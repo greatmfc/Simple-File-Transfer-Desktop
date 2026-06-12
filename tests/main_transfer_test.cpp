@@ -728,22 +728,37 @@ void test_parallel_progress_event_queue_reports_deltas() {
 
 	progress.add_completed(5);
 	progress.add_completed(3);
+	progress.begin_payload();
 
+	auto payload_event = events.wait();
+	require(payload_event.kind ==
+				sft_detail::parallel_transfer_event_kind::PayloadStarted,
+			"parallel progress queue should report payload start first");
+	require(payload_event.completed_delta == 8,
+			"payload start should capture pre-transfer completed bytes");
+	require(progress.completed_bytes.load() == 0,
+			"parallel progress should not update display state before the main "
+			"thread consumes the payload start event");
+
+	progress.apply_progress_event(payload_event);
+	require(progress.completed_bytes.load() == 8,
+			"parallel progress should apply pre-transfer completed bytes before "
+			"starting the timer");
+
+	progress.add_completed(2);
 	auto progress_event = events.wait();
 	require(progress_event.kind ==
 				sft_detail::parallel_transfer_event_kind::Progress,
 			"parallel progress queue should report a progress event");
-	require(progress_event.completed_delta == 8,
+	require(progress_event.completed_delta == 2,
 			"parallel progress queue should coalesce completed byte deltas");
-	require(progress.completed_bytes.load() == 0,
-			"parallel progress should not update display state before the main "
-			"thread consumes the event");
 
 	progress.apply_progress_event(progress_event);
-	require(progress.completed_bytes.load() == 8,
+	require(progress.completed_bytes.load() == 10,
 			"parallel progress should apply completed byte deltas on the main "
 			"thread");
 
+	progress.begin_payload();
 	events.notify_worker_completed(2);
 	auto completion_event = events.wait();
 	require(completion_event.kind ==
