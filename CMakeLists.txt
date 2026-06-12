@@ -444,6 +444,8 @@ if(BUILD_TESTS)
     endif()
 
     if(WIN32)
+        target_sources(main_transfer_test PRIVATE src/win32actions.cpp)
+        target_compile_definitions(main_transfer_test PRIVATE UNICODE _UNICODE)
         target_link_libraries(main_transfer_test PRIVATE ws2_32 winmm)
     endif()
 

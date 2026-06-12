@@ -112,7 +112,8 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
@@ -148,7 +149,8 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
@@ -175,7 +177,8 @@
         "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
@@ -194,7 +197,8 @@
       "description": "Linux Debug build with GCC",
       "inherits": "linux-base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
@@ -221,7 +225,8 @@
       "description": "Linux Debug build with Clang",
       "inherits": "linux-clang-base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
@@ -239,7 +244,8 @@
       "description": "macOS Debug build with AppleClang",
       "inherits": "macos-base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTS": "ON"
       }
     },
     {
