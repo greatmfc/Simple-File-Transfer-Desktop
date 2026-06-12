@@ -110,7 +110,7 @@ void receive_file_v11(Target& target, std::string_view first_request) {
 		kotcpp::File file_output_stream(*output_path);
 		std::cout << std::format("Receiving file: {}\tSize: {}",
 								 output_path->string(), entry.size)
-				  << std::endl;
+				  << '\n';
 		if (auto open_res =
 				file_output_stream.open(true, kotcpp::File::iomode::WRONLY);
 			!open_res) {

@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate-version:
+    name: Validate release version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Match tag with CMake project version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          project_version="$(
+            sed -n \
+              '/project(Simple-File-Transfer-Desktop/,/)/ {
+                s/.*VERSION[[:space:]]\+\([0-9][0-9.]*\).*/\1/p
+              }' \
+              CMakeLists.txt
+          )"
+
+          if [[ -z "$project_version" ]]; then
+            echo "Could not read the project version from CMakeLists.txt" >&2
+            exit 1
+          fi
+
+          normalized_project_version="$project_version"
+          if [[ "$normalized_project_version" != *.*.* ]]; then
+            normalized_project_version="${normalized_project_version}.0"
+          fi
+
+          if [[ "$tag_version" != "$normalized_project_version" ]]; then
+            echo "Tag version $tag_version does not match CMake version $project_version" >&2
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.asset_suffix }}
+    needs: validate-version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            asset_suffix: linux-x64
+            vcpkg_triplet: x64-linux
+            configure_args: -G Ninja
+          - os: windows-2022
+            asset_suffix: windows-x64
+            vcpkg_triplet: x64-windows-static
+            configure_args: -A x64
+
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite
+      CTEST_OUTPUT_ON_FAILURE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout vcpkg
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: f6735d5aa1537081e8d425372ea7e585b0ad65e8
+          path: vcpkg
+
+      - name: Create vcpkg binary cache directory
+        run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: release-vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            release-vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-
+
+      - name: Bootstrap vcpkg
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Bootstrap vcpkg
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "& (Join-Path $env:VCPKG_ROOT 'bootstrap-vcpkg.bat') -disableMetrics"
+
+      - name: Configure CMake
+        run: >
+          cmake
+          -S "${{ github.workspace }}"
+          -B "${{ github.workspace }}/build/release"
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTS=ON
+          ${{ matrix.configure_args }}
+
+      - name: Build
+        run: cmake --build "${{ github.workspace }}/build/release" --config Release --parallel
+
+      - name: Test
+        working-directory: ${{ github.workspace }}/build/release
+        run: ctest --build-config Release
+
+      - name: Package
+        id: package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="simple-file-transfer-${GITHUB_REF_NAME}-${{ matrix.asset_suffix }}"
+          cmake --install build/release --prefix "stage/$package_name"
+          cp README.md LICENSE.txt "stage/$package_name/"
+          tar -C stage -czf "$package_name.tar.gz" "$package_name"
+          echo "asset=$package_name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        id: package_windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageName = "simple-file-transfer-${env:GITHUB_REF_NAME}-${{ matrix.asset_suffix }}"
+          cmake --install build/release --config Release --prefix "stage/$packageName"
+          Copy-Item README.md, LICENSE.txt -Destination "stage/$packageName"
+          Compress-Archive -Path "stage/$packageName" -DestinationPath "$packageName.zip"
+          "asset=$packageName.zip" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release package
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: ${{ steps.package.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload release package
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          path: ${{ steps.package_windows.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        shell: bash
+        run: sha256sum * > SHA256SUMS
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "Simple File Transfer Desktop $GITHUB_REF_NAME"
+          fi

@@ -1,88 +1,239 @@
 #pragma once
 
-#include "../sftclass.hpp"
+#include "io.hpp"
+#include "util.hpp"
 #include <BS_thread_pool.hpp>
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <charconv>
-#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <future>
 #include <iostream>
-#include <limits>
-#include <memory>
 #include <mutex>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <tuple>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
-#include <vector>
 #include <sodium.h>
 
 namespace sft_detail {
 
-inline constexpr kotcpp::SizeType transfer_chunk_size     = 4'194'304;
-inline constexpr std::size_t      transfer_pipeline_depth = 4;
-inline constexpr std::string_view sft12_version           = "sft1.2";
-inline constexpr std::string_view sft13_version           = "sft1.3";
-inline constexpr std::string_view sft12_type              = "FIL";
+inline constexpr kotcpp::SizeType transfer_chunk_size       = 4'194'304;
+inline constexpr kotcpp::SizeType frame_buffer_size         = 1024 * 8;
+inline constexpr std::size_t      transfer_pipeline_depth   = 4;
+inline constexpr kotcpp::SizeType resume_state_update_bytes = 67'108'864;
+inline constexpr std::string_view sft12_version             = "sft1.2";
+inline constexpr std::string_view sft13_version             = "sft1.3";
+inline constexpr std::string_view sft12_type                = "FIL";
 
+enum class parallel_transfer_event_kind : uint8_t {
+	PayloadStarted,
+	Progress,
+	WorkerCompleted
+};
+
+struct parallel_transfer_event {
+		parallel_transfer_event_kind kind =
+			parallel_transfer_event_kind::Progress;
+		std::size_t worker_index    = 0;
+		std::size_t total_delta     = 0;
+		std::size_t completed_delta = 0;
+};
+
+struct parallel_transfer_event_queue {
+		void notify_payload_started() {
+			{
+				std::lock_guard lock(mutex);
+				if (payload_started) {
+					return;
+				}
+				payload_started               = true;
+				payload_started_pending       = true;
+				payload_start_total_delta     = pending_total_delta;
+				payload_start_completed_delta = pending_completed_delta;
+				pending_total_delta           = 0;
+				pending_completed_delta       = 0;
+				progress_pending              = false;
+			}
+			cv.notify_one();
+		}
+
+		void notify_progress(std::size_t total_delta,
+							 std::size_t completed_delta) {
+			if (total_delta == 0 && completed_delta == 0) {
+				return;
+			}
+			{
+				std::lock_guard lock(mutex);
+				pending_total_delta += total_delta;
+				pending_completed_delta += completed_delta;
+				progress_pending = true;
+			}
+			cv.notify_one();
+		}
+
+		void notify_worker_completed(std::size_t index) {
+			{
+				std::lock_guard lock(mutex);
+				completed_workers.push_back(index);
+			}
+			cv.notify_one();
+		}
+
+		parallel_transfer_event wait() {
+			std::unique_lock lock(mutex);
+			cv.wait(lock, [&]() {
+				return payload_started_pending || progress_pending ||
+					   !completed_workers.empty();
+			});
+
+			if (payload_started_pending) {
+				const auto total_delta        = payload_start_total_delta;
+				const auto completed_delta    = payload_start_completed_delta;
+				payload_start_total_delta     = 0;
+				payload_start_completed_delta = 0;
+				payload_started_pending       = false;
+				return {
+					.kind        = parallel_transfer_event_kind::PayloadStarted,
+					.total_delta = total_delta,
+					.completed_delta = completed_delta,
+				};
+			}
+
+			if (progress_pending) {
+				const auto total_delta     = pending_total_delta;
+				const auto completed_delta = pending_completed_delta;
+				pending_total_delta        = 0;
+				pending_completed_delta    = 0;
+				progress_pending           = false;
+				return {
+					.kind            = parallel_transfer_event_kind::Progress,
+					.total_delta     = total_delta,
+					.completed_delta = completed_delta,
+				};
+			}
+
+			if (!completed_workers.empty()) {
+				const auto index = completed_workers.front();
+				completed_workers.pop_front();
+				return {
+					.kind = parallel_transfer_event_kind::WorkerCompleted,
+					.worker_index = index,
+				};
+			}
+
+			return {
+				.kind = parallel_transfer_event_kind::Progress,
+			};
+		}
+
+	private:
+		std::mutex              mutex;
+		std::condition_variable cv;
+		std::deque<std::size_t> completed_workers;
+		std::size_t             pending_total_delta           = 0;
+		std::size_t             pending_completed_delta       = 0;
+		std::size_t             payload_start_total_delta     = 0;
+		std::size_t             payload_start_completed_delta = 0;
+		bool                    payload_started               = false;
+		bool                    payload_started_pending       = false;
+		bool                    progress_pending              = false;
+};
 
 struct parallel_transfer_progress {
-		explicit parallel_transfer_progress(std::size_t initial_total = 0,
-											bool preannounced_total   = false)
+		explicit parallel_transfer_progress(
+			std::size_t initial_total = 0, bool preannounced_total = false,
+			parallel_transfer_event_queue* event_queue = nullptr)
 			: total_bytes(initial_total),
-			  total_preannounced(preannounced_total) {
+			  total_preannounced(preannounced_total), events(event_queue) {
 		}
 
 		static std::size_t byte_count(kotcpp::SizeType bytes) {
-			return bytes <= 0 ? std::size_t{0} : static_cast<std::size_t>(bytes);
+			return bytes <= 0 ? std::size_t{0}
+							  : static_cast<std::size_t>(bytes);
 		}
 
 		void add_total(kotcpp::SizeType bytes) {
 			if (bytes <= 0) {
 				return;
 			}
-			total_bytes.fetch_add(byte_count(bytes), std::memory_order_relaxed);
+			const auto count = byte_count(bytes);
+			if (events != nullptr) {
+				events->notify_progress(count, 0);
+				return;
+			}
+			total_bytes.fetch_add(count, std::memory_order_relaxed);
 		}
 
 		void add_completed(kotcpp::SizeType bytes) {
 			if (bytes <= 0) {
 				return;
 			}
-			completed_bytes.fetch_add(byte_count(bytes),
-									  std::memory_order_relaxed);
+			const auto count = byte_count(bytes);
+			if (events != nullptr) {
+				events->notify_progress(0, count);
+				return;
+			}
+			completed_bytes.fetch_add(count, std::memory_order_relaxed);
 		}
 
-		void render(bool finish = false) const {
+		void begin_payload() {
+			if (events != nullptr) {
+				events->notify_payload_started();
+			}
+		}
+
+		void apply_progress_event(const parallel_transfer_event& event) {
+			if (event.total_delta > 0) {
+				total_bytes.fetch_add(event.total_delta,
+									  std::memory_order_relaxed);
+			}
+			if (event.completed_delta > 0) {
+				completed_bytes.fetch_add(event.completed_delta,
+										  std::memory_order_relaxed);
+			}
+		}
+
+		void restart_render_timer() {
+			const auto total = total_bytes.load(std::memory_order_relaxed);
+			auto completed   = completed_bytes.load(std::memory_order_relaxed);
+			completed        = std::min(completed, total);
+			[[likely]] if (last_render.valid()) { last_render.wait(); }
+			last_render = pool.submit_task([completed, total]() {
+				kotcpp::progress_bar_with_speed(completed, total, true);
+			});
+		}
+
+		void render(bool finish = false) {
 			const auto total = total_bytes.load(std::memory_order_relaxed);
 			if (total == 0) {
 				return;
 			}
 
-			auto completed =
-				completed_bytes.load(std::memory_order_relaxed);
-			completed = std::min(completed, total);
+			auto completed = completed_bytes.load(std::memory_order_relaxed);
+			completed      = std::min(completed, total);
 			if (!finish && completed >= total) {
 				completed = total - 1;
 			}
-			kotcpp::progress_bar_with_speed(completed, total);
+			[[likely]] if (last_render.valid()) { last_render.wait(); }
+			last_render = pool.submit_task([completed, total]() {
+				kotcpp::progress_bar_with_speed(completed, total);
+			});
 		}
 
 		std::atomic_size_t total_bytes{0};
 		std::atomic_size_t completed_bytes{0};
 		bool               total_preannounced = false;
+
+	private:
+		BS::light_thread_pool          pool{1};
+		std::future<void>              last_render;
+		parallel_transfer_event_queue* events = nullptr;
 };
 
 inline bool wait_for_transfer_worker(std::future<bool>& worker,
@@ -269,9 +420,11 @@ inline void append_sft12_file_entry(std::vector<send_entry_v12>& entries,
 						 get_path_permissions_or_unknown(local_path));
 }
 
-inline std::vector<send_entry_v12>
+inline std::pair<std::vector<send_entry_v12>, size_t>
 build_sft12_send_entries(const std::vector<std::string>& path_list) {
 	std::vector<send_entry_v12> entries;
+	size_t                      total_size = 0;
+
 	for (const auto& path_string : path_list) {
 		const std::filesystem::path path(
 			is_directory_marker(path_string)
@@ -339,6 +492,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 						ec.clear();
 						continue;
 					}
+					total_size += entry.file_size(ec);
 					append_sft12_file_entry(entries, entry.path(),
 											folder_name + relative.string());
 				}
@@ -369,6 +523,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 			}
 		}
 		else if (std::filesystem::is_regular_file(status)) {
+			total_size += std::filesystem::file_size(path);
 			append_sft12_file_entry(entries, path, path.filename().string());
 		}
 		else {
@@ -377,7 +532,7 @@ build_sft12_send_entries(const std::vector<std::string>& path_list) {
 									 path.string());
 		}
 	}
-	return entries;
+	return {entries, total_size};
 }
 
 inline std::size_t get_local_thread_count() {

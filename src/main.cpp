@@ -49,7 +49,7 @@ void print_help() {
 		"  -t, --transfer [FILES...] Enable transfer mode for one-time task.\n"
 		"  -p, --pull [FILES...]     Enable pull mode: wait for receiver to connect or actively connect to sender to pull files. It must be combined with either -r or -t.\n"
 		"  -a, --addr <ip:port>      Directly connect to specified address (skips discovery).\n"
-		"  --protocol <1.1|1.2|1.3>  Select transfer protocol. Default is 1.2.\n"
+		"  --protocol <1.1|1.2|1.3>  Select transfer protocol. Default is 1.3.\n"
 		"  --parallel                Use sft1.3 parallel transfer.\n"
 		"  --workers <N>             Limit sft1.3 worker connections. Default is min(local threads, payload files).\n"
 		"  --legacy                  Use the legacy sft1.1 transfer protocol.\n"
@@ -354,8 +354,9 @@ int main(int argc, char* argv[]) {
 		udp_socket usocket;
 		if (!usocket.initialize(AF_INET, SOCK_DGRAM, IPPROTO_UDP) ||
 			!usocket.bind(bind_ip, UDP_PORT)) {
-			print_error("UDP setup failed");
-			return 1;
+			print_error("UDP setup failed, UDP functions will be disabled");
+			usocket.close();
+			// return 1;
 		}
 		optval_t optval = 1;
 		(void)usocket.setsockopt(SOL_SOCKET, SO_BROADCAST, &optval,

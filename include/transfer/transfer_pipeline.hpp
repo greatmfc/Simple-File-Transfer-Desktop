@@ -5,13 +5,14 @@
 namespace sft_detail {
 
 struct transfer_pipeline_buffer {
-		explicit transfer_pipeline_buffer(kotcpp::SizeType capacity)
-			: data(static_cast<std::size_t>(capacity)) {
+		explicit transfer_pipeline_buffer(kotcpp::SizeType capacity) {
+			data = std::make_unique_for_overwrite<Byte[]>(
+				static_cast<size_t>(capacity));
 		}
 
-		std::vector<Byte> data;
-		kotcpp::SizeType  size   = 0;
-		kotcpp::SizeType  offset = 0;
+		std::unique_ptr<Byte[]> data;
+		kotcpp::SizeType        size   = 0;
+		kotcpp::SizeType        offset = 0;
 };
 
 class transfer_pipeline_queue {

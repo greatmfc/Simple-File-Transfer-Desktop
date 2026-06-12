@@ -6,10 +6,14 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
@@ -21,21 +25,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: ubuntu-gcc
             build_type: Release
             c_compiler: gcc
             cpp_compiler: g++
             vcpkg_triplet: x64-linux
-            configure_args: -DCMAKE_CXX_COMPILER=g++
-          - os: ubuntu-latest
+            configure_args: -G Ninja -DCMAKE_CXX_COMPILER=g++
+          - os: ubuntu-24.04
             name: ubuntu-clang
             build_type: Release
             c_compiler: clang
             cpp_compiler: clang++
             vcpkg_triplet: x64-linux
-            configure_args: -DCMAKE_CXX_COMPILER=clang++
-          - os: windows-latest
+            configure_args: -G Ninja -DCMAKE_CXX_COMPILER=clang++
+          - os: windows-2022
             name: windows-msvc
             build_type: Release
             c_compiler: cl
@@ -50,7 +54,11 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: microsoft/vcpkg
+        ref: f6735d5aa1537081e8d425372ea7e585b0ad65e8
         path: vcpkg
+
+    - name: Create vcpkg binary cache directory
+      run: cmake -E make_directory "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}"
 
     - name: Restore vcpkg binary cache
       uses: actions/cache@v4
@@ -59,7 +67,6 @@ jobs:
         key: vcpkg-binary-${{ runner.os }}-${{ matrix.name }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
         restore-keys: |
           vcpkg-binary-${{ runner.os }}-${{ matrix.name }}-${{ matrix.vcpkg_triplet }}-
-          vcpkg-binary-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-
 
     - name: Bootstrap vcpkg
       if: runner.os != 'Windows'

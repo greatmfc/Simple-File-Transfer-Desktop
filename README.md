@@ -1,161 +1,264 @@
-# Introduction [![Test](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions)
+# Simple File Transfer Desktop
 
-**Version 2.2** - SFT 1.2 resumable transfer protocol with secure encrypted sessions
+[![CI](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/greatmfc/Simple-File-Transfer-Desktop/actions/workflows/cmake-multi-platform.yml)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg)](https://isocpp.org/)
+[![License: GPL v2](https://img.shields.io/badge/License-GPL_v2-blue.svg)](LICENSE.txt)
 
-An interactive console application that supports receiving and sending files and folders between Simple-File-Transfer-Desktop/Android hosts.
+Simple File Transfer Desktop is an encrypted C++20 console application for
+transferring files and directories between desktop and Android SFT peers over a
+local network or a direct IP connection.
 
-# Features
+Windows and Linux are the supported desktop platforms.
 
-- **End-to-End Encrypted Transmission**: XChaCha20-Poly1305 authenticated encryption with libsodium
-- **Secure Handshake Protocol**: Cryptographic authentication and key exchange
-- **SFT 1.2 Transfer Protocol**: Per-file negotiation with range requests, resumable transfers, and permission metadata
-- **Legacy Protocol Support**: sft1.1 remains available through explicit command-line selection for forward compatibility
-- **Modern Build System**: CMake with vcpkg integration and cross-platform presets
-- **Cross-platform** (Windows/Linux/macOS/Android)
-- **Automatic Peer Discovery**: Automatically search for available SFT clients in local network via UDP broadcast
-- **Batch File Transfer**: Send or receive multiple files or folders (Android version does not support sending folders yet)
-- **Asymmetric Encryption**: Public-key cryptography for secure session establishment
-- **Command-line Interface**: One-time transfer/receive modes with command-line options
-- **Interactive & Drag-and-Drop**: Interactive menu on Windows with file/folder dialog support
-- **High Performance**: Chunked streaming transfer with release/profiling build presets
-- **Coroutine-based Async I/O**: Non-blocking network operations using C++20 coroutines
-- **Unified Error Handling**: Type-safe error propagation with expected-style results
+![Simple File Transfer Desktop](./pics/sft-desktop.gif)
 
-# Deployment
+## Highlights
 
-## Prerequisites
+- Authenticated encrypted sessions built with libsodium.
+- AEAD negotiation with AEGIS-256 preferred and XChaCha20-Poly1305 available
+  for compatibility.
+- sft1.3 parallel transfers with multiple authenticated worker connections.
+- sft1.2 per-file negotiation, rejection, range requests, permissions, and
+  resumable transfers.
+- Explicit sft1.1 compatibility mode for older peers.
+- File and directory transfer with path traversal protection on receive.
+- Support for resuming interrupted downloads.
+- LAN peer discovery over UDP or direct connection to a known address.
+- Push and pull workflows for different firewall and connectivity layouts.
+- Progress reporting with current speed, ETA, and final average speed.
+- CMake presets, vcpkg manifest dependencies, and GitHub Actions CI/release
+  automation.
+- Simple and easy to use.
 
-- **[vcpkg](https://github.com/microsoft/vcpkg)**: Package manager for dependencies
-- **libsodium**: Encryption library (automatically installed via vcpkg)
-- **CMake 3.25+**: Build system generator
-- **C++20 Compatible Compiler**: GCC 13+, Clang 17+, MSVC 2022 17.0+
+## Protocols
 
-## Quick Start
+| Protocol | Status | Capabilities |
+| --- | --- | --- |
+| **sft1.3** | Default | sft1.2 semantics plus parallel authenticated worker connections |
+| **sft1.2** | Supported | Per-file ACK/reject, range resume, permissions, and failure reporting |
+| **sft1.1** | Legacy | Compatibility protocol without the newer negotiation and resume features |
 
-### Using CMake Presets (Recommended)
+Select a protocol with `--protocol 1.1`, `--protocol 1.2`, or
+`--protocol 1.3`. `--parallel` selects sft1.3, while `--legacy` selects
+sft1.1.
 
-The project includes pre-configured CMake presets for all major platforms:
+Protocol flow diagrams:
+
+- [sft1.2 flow](./pics/sft1.2-flow.svg)
+- [sft1.3 flow](./pics/sft1.3-flow.svg)
+
+## Platform Support
+
+| Platform | Status |
+| --- | --- |
+| Windows x64 | Built and tested in CI; release archives are published |
+| Linux x64 | Built with GCC and Clang in CI; release archives are published |
+| Android | Supported as an interoperable SFT peer; sending directories is not yet supported |
+
+## Installation
+
+### Release Packages
+
+Tagged releases are published on the
+[GitHub Releases](https://github.com/greatmfc/Simple-File-Transfer-Desktop/releases)
+page with Linux x64 and Windows x64 archives plus SHA-256 checksums.
+
+Release binaries are currently unsigned. Windows may therefore display a
+SmartScreen warning.
+
+### Build from Source
+
+Requirements:
+
+- CMake 3.25 or newer
+- A C++20 compiler with `std::format` support
+- GCC 13+, Clang 17+ with a compatible standard library, or Visual Studio 2022
+- [vcpkg](https://github.com/microsoft/vcpkg)
+- Ninja for the Windows presets
+
+Dependencies are declared in `vcpkg.json` and installed automatically by the
+vcpkg toolchain:
+
+- libsodium
+- fmt
+- BS::thread_pool
+- tl::expected
+
+Set `VCPKG_ROOT` before configuring:
 
 ```bash
-git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
+export VCPKG_ROOT=/path/to/vcpkg
+```
+
+PowerShell:
+
+```powershell
+$env:VCPKG_ROOT = "C:\path\to\vcpkg"
+```
+
+#### Linux
+
+```bash
+git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop.git
 cd Simple-File-Transfer-Desktop
 
-# Configure using a preset (choose based on your platform)
-cmake --preset linux-release          # Linux with GCC
-cmake --preset linux-clang-release    # Linux with Clang
-cmake --preset x64-release            # Windows 64-bit with MSVC
-cmake --preset macos-release          # macOS with AppleClang
+cmake --preset linux-release
+cmake --build --preset linux-release --parallel
 
-# Build
-cmake --build --preset <preset-name>
-
-# Run the executable
-./build/bin/simple-file-transfer
+./build/linux-release/bin/simple-file-transfer
 ```
 
-### Manual Configuration
+Use `linux-clang-release` to build with Clang.
 
-```bash
-git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop
+#### Windows
+
+Run these commands from a Visual Studio 2022 developer shell:
+
+```powershell
+git clone https://github.com/greatmfc/Simple-File-Transfer-Desktop.git
 cd Simple-File-Transfer-Desktop
-mkdir build && cd build
 
-# Configure (set VCPKG_ROOT if vcpkg is not in default location)
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+cmake --preset x64-release
+cmake --build --preset x64-release --parallel
 
-# Build
-cmake --build . --config Release -j
-
-# Run
-./bin/simple-file-transfer
+.\build\x64-release\bin\simple-file-transfer.exe
 ```
 
-### Running Tests
+## Usage
 
-Build the test target first, then run the CTest suite:
+Run without a mode option to open the interactive menu:
 
 ```bash
-cmake --build build/linux-debug --target main_transfer_test
-ctest --test-dir build/linux-debug --output-on-failure
+simple-file-transfer
 ```
 
-If you configured a different build directory, replace `build/linux-debug` with
-that directory.
-
-## Platform-Specific Notes
-
-### Windows
-- **Visual Studio 2022** or **Ninja** with MSVC/Clang-CL
-- First run requires administrator permission to add firewall exception
-- Select network interface on startup for peer discovery
-- Drag-and-drop files onto executable supported
-- Presets available: `x64-release`, `x64-debug`, `x64-release-profiling`, `x64-clang-release`, `x86-release`
-
-### Linux
-- **GCC 13+** or **Clang 17+** recommended
-- Install system dependencies: `sudo apt-get install build-essential cmake`
-- No special privileges required
-- Presets available: `linux-release`, `linux-debug`, `linux-release-profiling`, `linux-clang-release`
-
-### macOS
-- **Xcode Command Line Tools** required
-- AppleClang (Xcode 14+ recommended)
-- Presets available: `macos-release`, `macos-debug`
-
-## Usage Examples
+Common commands:
 
 ```bash
-# Interactive mode (default)
-./simple-file-transfer
+# Wait for one incoming transfer.
+simple-file-transfer --receive/-r
 
-# One-time receive mode. Add --protocol 1.1 for legacy protocol.
-./simple-file-transfer -r
+# Send files or directories directly to a peer.
+simple-file-transfer --transfer/-t file.txt directory/ \
+  --addr/-a 192.168.1.100:10013
 
-# Direct connection to specific host
-./simple-file-transfer -t file1.txt -a 192.168.1.100:10013
+# Use sequential sft1.2 transfer.
+simple-file-transfer --transfer/-t file.txt \
+  --protocol 1.2 --addr/-a 192.168.1.100:10013
 
-# One-time receive and pull files from target. Useful when the receiver is behind NAT or firewall and cannot accept incoming connections.
-./simple-file-transfer -rp -a 1.2.3.4:1234
+# Use sft1.3 with at most four worker connections.
+simple-file-transfer --transfer/-t directory/ \
+  --parallel --workers 4 --addr 192.168.1.100:10013
 
-# One-time transfer and waiting for clients to pull.
-./simple-file-transfer -tp file1 dir1/
+# Use legacy sft1.1.
+simple-file-transfer --transfer/-t file.txt \
+  --legacy --addr/-a 192.168.1.100:10013
 
-# Use legacy sft1.1 protocol explicitly
-./simple-file-transfer -t file1.txt --legacy -a 192.168.1.100:10013
+# Connect to a sender and pull its offered files.
+simple-file-transfer -rp/-pr --addr/-a 192.168.1.100:10013
 
-# Select a protocol version explicitly. Protocol 1.2 is the default.
-./simple-file-transfer -t file1.txt --protocol 1.2 -a 192.168.1.100:10013
-
-# Show help
-./simple-file-transfer -h
+# Offer files and wait for a receiver to pull them.
+simple-file-transfer -tp/-pt file.txt directory/
 ```
 
-# Notes
+### Command-Line Options
 
-## Transfer Protocols
-- **sft1.2 is the default protocol** for command-line transfers.
-- **sft1.2** sends one file entry at a time and lets the receiver ACK, reject, or request a byte range for resume.
-- **Resume state** is stored in the system temporary directory under `sft-resume` and is removed after a file is fully received.
-- **File permissions** are transferred as metadata when the platform exposes them through `std::filesystem`.
-- **sft1.1** is preserved for compatibility and can be selected with `--legacy` or `--protocol 1.1`.
+| Option | Description |
+| --- | --- |
+| `-h`, `--help` | Show command-line help |
+| `-r`, `--receive` | Receive one transfer and exit |
+| `-t`, `--transfer [FILES...]` | Send files or directories and exit |
+| `-rp`, `-tp [FILES...]` | Reverse connection direction; combine with receive or transfer |
+| `-a`, `--addr <ip:port>` | Connect directly instead of using discovery |
+| `--protocol <1.1\|1.2\|1.3>` | Select the transfer protocol; default is 1.3 |
+| `--parallel` | Select sft1.3 parallel transfer |
+| `--workers <N>` | Limit sft1.3 worker connections |
+| `--legacy` | Select the legacy sft1.1 protocol |
+
+For sft1.3, the default worker count is the smaller of the local thread count
+and the number of payload files.
 
 ## Security
-- **Trust-on-First-Use**: Unknown host fingerprints require manual approval on first connection
-- **Key Storage**: Cryptographic keys are stored in platform-specific secure directories:
-  - Windows: `%APPDATA%\sft\`
-  - Linux/macOS: `~/.config/sft/`
-- **Encryption**: All data is encrypted with XChaCha20-Poly1305 using libsodium
 
-## Platform Considerations
-- **Windows**: Requires administrator permission for firewall exception on first launch
-- **Windows**: Network interface selection required for peer discovery (limitation of Windows networking APIs)
-- **Linux/macOS**: No special privileges required
+- Peers use signed identity keys and authenticated session establishment.
+- The handshake negotiates AEAD support. AEGIS-256 is preferred, with
+  XChaCha20-Poly1305 used when required for compatibility.
+- Peer identities use trust on first use. An unknown fingerprint must be
+  accepted before it is written to `known_hosts`.
+- Send and receive keys, nonces, and counters are maintained independently.
+- Received paths reject absolute paths, `..` traversal, and paths that escape
+  the destination root.
 
-## Build System
-- **Profiling Builds**: Use `-release-profiling` presets for performance analysis with debug symbols
-- **IDE Support**: Automatic `compile_commands.json` symlinking for clangd/LSP support
-- **Static Linking**: Release builds are statically linked for portability
+Identity and trust files are stored under:
 
-# Example
+- Windows: `%APPDATA%\sft\`
+- Linux: `~/.config/sft/`
 
-![](./pics/sft-desktop.gif)
+The protocol and implementation have not undergone an independent security
+audit. Do not accept an unexpected fingerprint.
+
+## Network
+
+| Purpose | Protocol | Port |
+| --- | --- | --- |
+| LAN discovery | UDP | `41541` |
+| Main transfer connection | TCP | `10013` by default |
+| sft1.3 workers | TCP | Dynamically negotiated ports |
+
+Windows may request administrator access on first launch to add a firewall
+exception. Interactive Windows mode also asks which network interface should
+be used for discovery.
+
+## Resumable Transfers
+
+sft1.2 and sft1.3 maintain receiver-side progress state in the system temporary
+directory under `sft-resume`. A matching retry may request only the remaining
+byte range. The state file is removed after the file is received successfully.
+
+## Testing
+
+Configure a test build, compile it, and run CTest:
+
+```bash
+cmake --preset linux-debug -DBUILD_TESTS=ON
+cmake --build --preset linux-debug --parallel
+ctest --preset linux-debug
+```
+
+The test suite covers transfer framing, path safety, resume behavior, parallel
+worker negotiation, failure reporting, and secure-session AEAD negotiation.
+CI runs Release builds and CTest with GCC, Clang, and MSVC.
+
+## Contributing
+
+1. Create a focused branch from `main`.
+2. Keep protocol, security, and cross-platform behavior compatible with the
+   existing implementation.
+3. Add or update tests for behavior changes.
+4. Run the relevant build and CTest preset.
+5. Open a pull request describing the change, compatibility impact, and test
+   results.
+
+Do not commit private keys, `known_hosts`, transferred test files, local build
+artifacts, or machine-specific configuration.
+
+## Creating a Release
+
+The release workflow is triggered by a semantic version tag that matches the
+CMake project version. Replace `X.Y.Z` with the release version:
+
+```bash
+git switch main
+git pull --ff-only origin main
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+After Linux and Windows builds and tests pass, GitHub Actions creates the
+release, generates release notes, uploads both platform archives, and publishes
+`SHA256SUMS`.
+
+## License
+
+This project is licensed under the
+[GNU General Public License version 2](./LICENSE.txt).

@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <tl/expected.hpp>
 #include <format>
 #include <utility>
@@ -54,6 +55,11 @@ enum class ErrorSource {
 	Sft
 };
 
+enum class SftErrorDomain {
+	Generic,
+	SecureAead,
+};
+
 inline std::string trim_error_message(std::string message) {
 	while (!message.empty() &&
 		   (message.back() == '\r' || message.back() == '\n' ||
@@ -84,7 +90,22 @@ class Error {
 		Error() = default;
 
 		Error(ErrorSource source, int code, std::string message)
-			: _source(source), _code(code), _message(std::move(message)) {
+			: Error(source, SftErrorDomain::Generic, code,
+					std::move(message)) {
+		}
+
+		Error(ErrorSource source, SftErrorDomain domain, int code,
+			  std::string message)
+			: _source(source), _sft_domain(domain), _code(code),
+			  _message(std::move(message)) {
+		}
+
+		template <typename Enum>
+			requires std::is_enum_v<Enum>
+		Error(ErrorSource source, SftErrorDomain domain, Enum code,
+			  std::string message)
+			: Error(source, domain, static_cast<int>(code),
+					std::move(message)) {
 		}
 
 		Error(int code) : Error(ErrorSource::Os, code, format_os_error(code)) {
@@ -107,6 +128,10 @@ class Error {
 			return _source;
 		}
 
+		SftErrorDomain sft_domain() const noexcept {
+			return _sft_domain;
+		}
+
 		int code() const noexcept {
 			return _code;
 		}
@@ -123,14 +148,26 @@ class Error {
 			return _source == source && _code == code;
 		}
 
+		bool is_sft_error(SftErrorDomain domain, int code) const noexcept {
+			return _source == ErrorSource::Sft && _sft_domain == domain &&
+				   _code == code;
+		}
+
+		template <typename Enum>
+			requires std::is_enum_v<Enum>
+		bool is_sft_error(SftErrorDomain domain, Enum code) const noexcept {
+			return is_sft_error(domain, static_cast<int>(code));
+		}
+
 		explicit operator bool() const noexcept {
 			return _source == ErrorSource::Sft || _code != 0;
 		}
 
 	private:
-		ErrorSource _source  = ErrorSource::Os;
-		int         _code    = 0;
-		std::string _message = {};
+		ErrorSource    _source     = ErrorSource::Os;
+		SftErrorDomain _sft_domain = SftErrorDomain::Generic;
+		int            _code       = 0;
+		std::string    _message    = {};
 };
 
 inline bool operator==(const Error& error, int code) noexcept {
@@ -159,6 +196,22 @@ inline Error make_os_error(int code, std::string message) {
 
 inline Error make_sft_error(std::string message) {
 	return {ErrorSource::Sft, 1, std::move(message)};
+}
+
+inline Error make_sft_error(int code, std::string message) {
+	return {ErrorSource::Sft, code, std::move(message)};
+}
+
+inline Error make_sft_error(SftErrorDomain domain, int code,
+							std::string message) {
+	return {ErrorSource::Sft, domain, code, std::move(message)};
+}
+
+template <typename Enum>
+	requires std::is_enum_v<Enum>
+inline Error make_sft_error(SftErrorDomain domain, Enum code,
+							std::string message) {
+	return make_sft_error(domain, static_cast<int>(code), std::move(message));
 }
 
 inline Error last_error() {
