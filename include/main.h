@@ -83,7 +83,8 @@ bool send_file_v13_parallel(
 
 template <kotcpp::AsyncTransferTarget Target>
 void                                               receive_file(Target&                                      target,
-																const sft_detail::parallel_transfer_options& options);
+																const sft_detail::parallel_transfer_options& options,
+																const std::string* output_path = nullptr);
 
 template <kotcpp::AsyncTransferTarget Target> void receive_file(Target& target);
 

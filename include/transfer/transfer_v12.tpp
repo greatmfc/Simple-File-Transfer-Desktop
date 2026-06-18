@@ -146,12 +146,15 @@ bool send_file_v12(Target& target, const std::vector<std::string>& files) {
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file_v12(Target& target, std::string_view first_frame) {
-	std::string current_frame(first_frame);
-	const auto  output_root      = std::filesystem::current_path();
-	auto        pipeline_context = sft_detail::transfer_pipeline_context();
+void receive_file_v12(Target& target, std::string_view first_frame,
+					  const std::string* output_path = nullptr) {
+	std::string    current_frame(first_frame);
+	const fs::path output_root      = output_path == nullptr
+										  ? std::filesystem::current_path()
+										  : fs::path(*output_path);
+	auto           pipeline_context = sft_detail::transfer_pipeline_context();
 
-	auto        read_next_frame  = [&]() -> bool {
+	auto           read_next_frame  = [&]() -> bool {
         auto next_frame = sft_detail::read_control_frame(target);
         if (!next_frame) {
             kotcpp::print_error("Fail to receive sft1.2 frame", next_frame);

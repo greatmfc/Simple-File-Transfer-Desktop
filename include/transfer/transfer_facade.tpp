@@ -29,7 +29,8 @@ bool send_file(
 
 template <kotcpp::AsyncTransferTarget Target>
 void receive_file(Target&                                      target,
-				  const sft_detail::parallel_transfer_options& options) {
+				  const sft_detail::parallel_transfer_options& options,
+				  const std::string*                           output_path) {
 	target.set_blocking();
 	auto first_frame = sft_detail::read_control_frame(target);
 	if (!first_frame) {
@@ -42,17 +43,17 @@ void receive_file(Target&                                      target,
 #endif
 
 	if (sft_detail::is_sft13_frame(*first_frame)) {
-		receive_file_v13_parallel(target, *first_frame, options);
+		receive_file_v13_parallel(target, *first_frame, options, output_path);
 	}
 	else if (sft_detail::is_sft12_frame(*first_frame)) {
-		receive_file_v12(target, *first_frame);
+		receive_file_v12(target, *first_frame, output_path);
 	}
 	else {
-		receive_file_v11(target, *first_frame);
+		receive_file_v11(target, *first_frame, output_path);
 	}
 }
 
 template <kotcpp::AsyncTransferTarget Target>
 void receive_file(Target& target) {
-	receive_file(target, sft_detail::parallel_transfer_options{});
+	receive_file(target, sft_detail::parallel_transfer_options{}, nullptr);
 }

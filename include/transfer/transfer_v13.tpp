@@ -166,7 +166,8 @@ bool send_file_v13_parallel(
 template <kotcpp::AsyncTransferTarget Target>
 void receive_file_v13_parallel(
 	Target& target, std::string_view first_frame,
-	const sft_detail::parallel_transfer_options& options) {
+	const sft_detail::parallel_transfer_options& options,
+	const std::string*                           output_path = nullptr) {
 	auto hello = sft_detail::parse_sft13_frame(first_frame);
 	if (!hello || hello->action != sft_detail::frame_action::Hello) {
 		kotcpp::print_error("Fail to parse sft1.3 HELLO", hello);
@@ -238,7 +239,9 @@ void receive_file_v13_parallel(
 		return;
 	}
 
-	const auto output_root = std::filesystem::current_path();
+	const fs::path                     output_root = output_path == nullptr
+														 ? std::filesystem::current_path()
+														 : fs::path(*output_path);
 	sft_detail::parallel_receive_state receive_state;
 	auto                               print_receive_failures = [&]() {
         sft_detail::print_parallel_receive_failures(receive_state);

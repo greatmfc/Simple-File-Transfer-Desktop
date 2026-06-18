@@ -48,7 +48,8 @@ bool send_file_v11(
 }
 
 template <kotcpp::AsyncTransferTarget Target>
-void receive_file_v11(Target& target, std::string_view first_request) {
+void receive_file_v11(Target& target, std::string_view first_request,
+					  const std::string* output_path = nullptr) {
 	auto entries = sft_detail::parse_file_request(first_request);
 	if (!entries) {
 		kotcpp::print_error("Fail to parse transfer request", entries);
@@ -61,7 +62,9 @@ void receive_file_v11(Target& target, std::string_view first_request) {
 		return;
 	}
 
-	const auto output_root = std::filesystem::current_path();
+	const fs::path output_root = output_path == nullptr
+									 ? std::filesystem::current_path()
+									 : fs::path(*output_path);
 	for (const auto& entry : *entries) {
 		auto output_path =
 			sft_detail::resolve_output_path<true>(output_root, entry.path);
