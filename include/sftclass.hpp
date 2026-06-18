@@ -159,6 +159,19 @@ class sft_identity {
 					if (auto ret = pub_file.read(_pub); !ret) {
 						return tl::unexpected(ret.error());
 					}
+					if (auto ret = sec_file.get_permissions();
+						*ret !=
+						(fs::perms::owner_read | fs::perms::owner_write)) {
+						sec_file.set_permissions(fs::perms::owner_read |
+												 fs::perms::owner_write);
+					}
+					if (auto ret = pub_file.get_permissions();
+						*ret !=
+						(fs::perms::owner_read | fs::perms::owner_write |
+						 fs::perms::group_read | fs::perms::others_read)) {
+						pub_file.set_permissions(fs::perms::owner_read |
+												 fs::perms::owner_write);
+					}
 				}
 				else {
 					crypto_sign_keypair(_pub.data(), _sec.data());
@@ -174,6 +187,11 @@ class sft_identity {
 						return tl::unexpected(ret.error());
 					}
 					if (auto ret = pub_file.write(_pub); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = sec_file.set_permissions(
+							fs::perms::owner_read | fs::perms::owner_write);
+						!ret) {
 						return tl::unexpected(ret.error());
 					}
 				}
@@ -230,11 +248,20 @@ class known_hosts_store {
 						_known_hosts.insert(host);
 					}
 				}
+				if (auto ret = _hosts_file.get_permissions();
+					*ret != (fs::perms::owner_read | fs::perms::owner_write)) {
+					_hosts_file.set_permissions(fs::perms::owner_read |
+												fs::perms::owner_write);
+				}
 			}
 			else if (auto ret = _hosts_file.open(true); !ret) {
 				return tl::unexpected(ret.error());
 			}
-
+			if (auto ret = _hosts_file.set_permissions(fs::perms::owner_read |
+													   fs::perms::owner_write);
+				!ret) {
+				return tl::unexpected(ret.error());
+			}
 			return {};
 		}
 
