@@ -34,9 +34,10 @@ struct sft_config {
 		SftProtocol    protocol    = SftProtocol::V13;
 		string         target_addr = "";
 		vector<string> file_list;
-		bool           is_one_time     = false;
-		bool           use_random_port = false;
-		size_t         max_workers     = 0;
+		bool           is_one_time      = false;
+		bool           use_random_port  = false;
+		size_t         max_workers      = 0;
+		bool           is_export_pubkey = false;
 };
 
 void print_help() {
@@ -53,6 +54,8 @@ void print_help() {
 		"  --parallel                Use sft1.3 parallel transfer.\n"
 		"  --workers <N>             Limit sft1.3 worker connections. Default is min(local threads, payload files).\n"
 		"  --legacy                  Use the legacy sft1.1 transfer protocol.\n"
+		"  --export-key              Export the public key to stdin.\n"
+		"  --reset-key               Reset the key pair.\n"
 		"\n"
 		"Interactive Mode: Run without -r, -t or -p to enter interactive menu.\n"
 		"Examples: \n"
@@ -134,6 +137,14 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 		}
 		else if (argv[i] == "--legacy") {
 			config.protocol = SftProtocol::V11;
+		}
+		else if (argv[i] == "--export-key") {
+			config.mode        = SftMode::ExportPubKey;
+			config.is_one_time = true;
+		}
+		else if (argv[i] == "--reset-key") {
+			config.mode        = SftMode::ResetKeyPair;
+			config.is_one_time = true;
 		}
 		else if (config.mode == SftMode::Interactive) {
 			// If no mode set yet, assume transfer mode for drag-and-drop or
@@ -424,6 +435,31 @@ int main(int argc, char* argv[]) {
 				execute_receiver_pull_task(
 					usocket, receiver, config.target_addr, sec_path.string(),
 					pub_path.string(), hosts_path.string(), config.max_workers);
+			}
+		}
+		else if (mode == SftMode::ExportPubKey) {
+			sft_identity temp_identity;
+			if (temp_identity.initialize(sec_path.string(),
+										 pub_path.string())) {
+				string pubkey_str = temp_identity.fingerprint();
+				std::cout << "Your public key (hex): " << pubkey_str << "\n";
+			}
+			else {
+				std::cerr << "Failed to initialize client for exporting public "
+							 "key.\n";
+			}
+		}
+		else if (mode == SftMode::ResetKeyPair) {
+			std::error_code ec;
+			std::filesystem::remove(sec_path, ec);
+			if (ec) {
+				std::cerr << "Failed to remove secret key: " << ec.message()
+						  << "\n";
+			}
+			std::filesystem::remove(pub_path, ec);
+			if (ec) {
+				std::cerr << "Failed to remove public key: " << ec.message()
+						  << "\n";
 			}
 		}
 
