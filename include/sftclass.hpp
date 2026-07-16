@@ -1,7 +1,6 @@
 #pragma once
 
 #include "SecureSession.hpp"
-#include "io.hpp"
 #include <algorithm>
 #include <format>
 #include <string>
@@ -128,101 +127,6 @@ inline std::string vector_to_string(const std::vector<uint8_t>& v) {
 	return res.data();
 }
 
-class sft_identity {
-	private:
-		SecureKey   _sec;
-		PubKeyArray _pub{};
-
-	public:
-		Result<void> initialize(const string_type& sec_path,
-								const string_type& pub_path) {
-			File sec_file(sec_path);
-			File pub_file(pub_path);
-
-			{
-				ScopedWriteAccess w(_sec);
-				if (sec_file.is_exist() &&
-					sec_file.size() == SessionSeckeyBytes &&
-					pub_file.is_exist() &&
-					pub_file.size() == SessionPubkeyBytes) {
-					if (auto ret = sec_file.open_read_only(); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret =
-							sec_file.read(_sec.data(), (SizeType)_sec.size());
-						!ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = pub_file.open_read_only(); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = pub_file.read(_pub); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = sec_file.get_permissions();
-						*ret !=
-						(fs::perms::owner_read | fs::perms::owner_write)) {
-						sec_file.set_permissions(fs::perms::owner_read |
-												 fs::perms::owner_write);
-					}
-					if (auto ret = pub_file.get_permissions();
-						*ret !=
-						(fs::perms::owner_read | fs::perms::owner_write |
-						 fs::perms::group_read | fs::perms::others_read)) {
-						pub_file.set_permissions(fs::perms::owner_read |
-												 fs::perms::owner_write);
-					}
-				}
-				else {
-					crypto_sign_keypair(_pub.data(), _sec.data());
-					if (auto ret = sec_file.open(true); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret =
-							sec_file.write(_sec.data(), (SizeType)_sec.size());
-						!ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = pub_file.open(true); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = pub_file.write(_pub); !ret) {
-						return tl::unexpected(ret.error());
-					}
-					if (auto ret = sec_file.set_permissions(
-							fs::perms::owner_read | fs::perms::owner_write);
-						!ret) {
-						return tl::unexpected(ret.error());
-					}
-				}
-			}
-
-			return {};
-		}
-
-		std::unique_ptr<SessionBase>
-		create_client_session(const SecureAeadAlgorithmList& algorithms =
-								  default_secure_aead_algorithms(),
-							  bool require_aead_negotiation = false) const {
-			ScopedReadAccess r(_sec);
-			return std::make_unique<ClientSession>(
-				_pub, _sec.data(), algorithms, require_aead_negotiation);
-		}
-
-		std::unique_ptr<SessionBase>
-		create_server_session(const SecureAeadAlgorithmList& algorithms =
-								  default_secure_aead_algorithms(),
-							  bool require_aead_negotiation = false) const {
-			ScopedReadAccess r(_sec);
-			return std::make_unique<ServerSession>(
-				_pub, _sec.data(), algorithms, require_aead_negotiation);
-		}
-
-		std::string fingerprint() const {
-			return get_fingerprint(_pub.data(), _pub.size());
-		}
-};
-
 class known_hosts_store {
 	private:
 		std::unordered_set<std::string> _known_hosts;
@@ -302,7 +206,7 @@ class secure_channel : public io_overloads<secure_channel> {
 	private:
 		tcp_socket                   _conn;
 		std::unique_ptr<SessionBase> _session;
-		// Potential security issue of reuse buffer ?
+		// Potential security issue of reuse buffer?
 		std::unique_ptr<uint8_t[]>   _ciphertext;
 		kotcpp::SizeType             _ciphertext_len = ciphertext_buffer_size;
 
@@ -317,8 +221,13 @@ class secure_channel : public io_overloads<secure_channel> {
 				std::make_unique_for_overwrite<uint8_t[]>(_ciphertext_len);
 		}
 
-		void set_session(std::unique_ptr<SessionBase> session) {
-			_session = std::move(session);
+		secure_channel(const secure_channel&)                = delete;
+		secure_channel& operator=(const secure_channel&)     = delete;
+		secure_channel(secure_channel&&) noexcept            = default;
+		secure_channel& operator=(secure_channel&&) noexcept = default;
+
+		void            set_session(std::unique_ptr<SessionBase> session) {
+            _session = std::move(session);
 		}
 
 		SessionBase& session() {
@@ -341,13 +250,21 @@ class secure_channel : public io_overloads<secure_channel> {
 			_conn = std::move(socket);
 		}
 
+		SizeType ciphertext_capacity() const noexcept {
+			return _ciphertext_len;
+		}
+
+		std::unique_ptr<uint8_t[]> take_ciphertext_buffer() noexcept {
+			return std::move(_ciphertext);
+		}
+
 		static Error channel_error(std::string message) {
 			return make_sft_error(std::move(message));
 		}
 
 		// Yields and returns the number of bytes written since last resume.
 		IoResult write(const Byte* buf, SizeType nbytes) const {
-			if (!_conn.available() || !_session) {
+			if (!_conn.available() || !_session || !_ciphertext) {
 				co_return tl::unexpected(channel_error(
 					"Cannot write: secure channel is not connected."));
 			}
@@ -414,7 +331,7 @@ class secure_channel : public io_overloads<secure_channel> {
 
 		// Yields and returns the number of bytes read since last resume.
 		IoResult read(Byte* buf, SizeType nbytes) const {
-			if (!_conn.available() || !_session) {
+			if (!_conn.available() || !_session || !_ciphertext) {
 				co_return tl::unexpected(channel_error(
 					"Cannot read: secure channel is not connected."));
 			}
@@ -510,8 +427,8 @@ class sft_client : public io_overloads<sft_client> {
 		bool _require_aead_negotiation = false;
 
 		void reset_session() {
-			_channel.set_session(_identity.create_client_session(
-				_aead_algorithms, _require_aead_negotiation));
+			_channel.set_session(std::make_unique<ClientSession>(
+				_identity._pub, _aead_algorithms, _require_aead_negotiation));
 		}
 
 	public:
@@ -553,6 +470,10 @@ class sft_client : public io_overloads<sft_client> {
 
 		IoResult write(const Byte* buf, SizeType nbytes) const {
 			return _channel.write(buf, nbytes);
+		}
+
+		secure_channel release_channel() && {
+			return std::move(_channel);
 		}
 
 		void close() {
@@ -605,12 +526,14 @@ class sft_client : public io_overloads<sft_client> {
 				conn.close();
 				return read_res;
 			}
-			auto res = session.step2_handle_response(buf, [&](const std::string&
-																  fp) {
-				return _known_hosts.ensure_trusted(
-					fp,
-					"Please check the other side to accept the connection.");
-			});
+			auto res = session.step2_handle_response(
+				buf,
+				[&](const std::string& fp) {
+					return _known_hosts.ensure_trusted(
+						fp, "Please check the other side to accept the "
+							"connection.");
+				},
+				_identity);
 			if (!res) {
 				conn.close();
 				return tl::unexpected(make_sft_error(
@@ -688,8 +611,8 @@ class sft_server : public io_overloads<sft_server> {
 		bool _require_aead_negotiation = false;
 
 		void reset_session() {
-			_channel.set_session(_identity.create_server_session(
-				_aead_algorithms, _require_aead_negotiation));
+			_channel.set_session(std::make_unique<ServerSession>(
+				_identity._pub, _aead_algorithms, _require_aead_negotiation));
 		}
 
 	public:
@@ -733,6 +656,10 @@ class sft_server : public io_overloads<sft_server> {
 			return _channel.write(buf, nbytes);
 		}
 
+		secure_channel release_channel() && {
+			return std::move(_channel);
+		}
+
 		void close() {
 			_channel.close();
 		}
@@ -765,7 +692,7 @@ class sft_server : public io_overloads<sft_server> {
 			if (!ret) {
 				return ret;
 			}
-			auto server_response = session.step1_handle_hello(buf);
+			auto server_response = session.step1_handle_hello(buf, _identity);
 			if (!server_response) {
 				return tl::unexpected(make_sft_error(
 					std::format("Secure server handshake failed while handling "
