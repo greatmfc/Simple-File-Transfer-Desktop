@@ -67,7 +67,7 @@ void receive_file_v11(Target& target, std::string_view first_request,
 									 : fs::path(*output_path);
 	for (const auto& entry : *entries) {
 		auto output_path =
-			sft_detail::resolve_output_path<true>(output_root, entry.path);
+			sft_detail::resolve_output_path(output_root, entry.path);
 		if (!output_path) {
 			kotcpp::print_error("Reject output path from peer", output_path);
 			if (!sft_detail::drain_target_bytes(target, entry.size, scratch,
