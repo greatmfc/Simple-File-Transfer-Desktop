@@ -22,7 +22,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # 项目配置
 project(Simple-File-Transfer-Desktop
-    VERSION 2.4
+    VERSION 2.4.2
     DESCRIPTION "Simple File Transfer Desktop Application"
     LANGUAGES CXX
 )
@@ -119,7 +119,6 @@ set(GNULIKE_DEBUG_FLAGS
 
 set(GNULIKE_RELEASE_FLAGS
     -O2
-    -march=native
     -flto
 )
 
@@ -129,7 +128,6 @@ set(GNULIKE_PROFILE_FLAGS
     -O2                      # 保持优化以获得真实性能数据
     -g                       # 调试符号，用于解析函数名
     -fno-omit-frame-pointer  # 保留帧指针，perf 需要用于栈回溯
-    -march=native            # 本机优化
     # -fno-inline            # 可选：禁用内联以获得更清晰的调用图（会影响性能）
 )
 

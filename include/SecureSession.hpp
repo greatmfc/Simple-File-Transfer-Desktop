@@ -2,6 +2,7 @@
 #define SECURE_SESSION_HPP
 
 #include "ErrorResult.h"
+#include "io.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -34,6 +35,7 @@ constexpr auto MaxNonceBytes = crypto_aead_aegis256_NPUBBYTES;
 
 using PubKeyArray            = std::array<uint8_t, SessionPubkeyBytes>;
 using SecKeyArray            = std::array<uint8_t, SessionSeckeyBytes>;
+using SessionKeyArray        = std::array<uint8_t, crypto_kx_SESSIONKEYBYTES>;
 
 namespace kotcpp {
 
@@ -357,9 +359,7 @@ class SecureKey {
 		}
 
 		~SecureKey() {
-			if (ptr_) {
-				sodium_free(ptr_); // 会自动清零内存
-			}
+			reset();
 		}
 
 		// 禁止拷贝，只能移动 (防止密钥多处副本)
@@ -374,6 +374,14 @@ class SecureKey {
 
 		size_t size() const {
 			return size_;
+		}
+
+		void reset() {
+			if (ptr_) {
+				sodium_free(ptr_); // 会自动清零内存
+				ptr_  = nullptr;
+				size_ = 0;
+			}
 		}
 
 		// --- 临时访问权限控制 ---
@@ -428,6 +436,91 @@ class ScopedWriteAccess {
 		} // 写完立刻锁死
 };
 
+class sft_identity {
+	private:
+		SecureKey _sec;
+
+	public:
+		PubKeyArray  _pub{};
+
+		Result<void> initialize(const string_type& sec_path,
+								const string_type& pub_path) {
+			File sec_file(sec_path);
+			File pub_file(pub_path);
+
+			{
+				ScopedWriteAccess w(_sec);
+				if (sec_file.is_exist() &&
+					sec_file.size() == SessionSeckeyBytes &&
+					pub_file.is_exist() &&
+					pub_file.size() == SessionPubkeyBytes) {
+					if (auto ret = sec_file.open_read_only(); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret =
+							sec_file.read(_sec.data(), (SizeType)_sec.size());
+						!ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = pub_file.open_read_only(); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = pub_file.read(_pub); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = sec_file.get_permissions();
+						*ret !=
+						(fs::perms::owner_read | fs::perms::owner_write)) {
+						sec_file.set_permissions(fs::perms::owner_read |
+												 fs::perms::owner_write);
+					}
+					if (auto ret = pub_file.get_permissions();
+						*ret !=
+						(fs::perms::owner_read | fs::perms::owner_write |
+						 fs::perms::group_read | fs::perms::others_read)) {
+						pub_file.set_permissions(fs::perms::owner_read |
+												 fs::perms::owner_write);
+					}
+				}
+				else {
+					crypto_sign_keypair(_pub.data(), _sec.data());
+					if (auto ret = sec_file.open(true); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret =
+							sec_file.write(_sec.data(), (SizeType)_sec.size());
+						!ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = pub_file.open(true); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = pub_file.write(_pub); !ret) {
+						return tl::unexpected(ret.error());
+					}
+					if (auto ret = sec_file.set_permissions(
+							fs::perms::owner_read | fs::perms::owner_write);
+						!ret) {
+						return tl::unexpected(ret.error());
+					}
+				}
+			}
+
+			return {};
+		}
+
+		std::string fingerprint() const {
+			return get_fingerprint(_pub.data(), _pub.size());
+		}
+
+		bool sign(buffer_type auto& output, const buffer_type auto& message) {
+			ScopedReadAccess   r_id(_sec);
+			unsigned long long sz = output.size();
+			return crypto_sign_detached(output.data(), &sz, message.data(),
+										message.size(), _sec.data()) == 0;
+		}
+};
+
 // ============================================================================
 // 2. 基础会话类
 // ============================================================================
@@ -448,8 +541,7 @@ class SessionBase {
 		uint64_t                                    length_counter_rx_ = 0;
 
 		// 长期身份密钥
-		SecureKey                                   identity_sk_;
-		PubKeyArray                identity_pk_; // 公钥不需要保护
+		PubKeyArray                identity_pk_{}; // 公钥不需要保护
 
 		// 握手过程中的临时数据
 		std::unique_ptr<SecureKey> ephemeral_sk_;
@@ -524,13 +616,15 @@ class SessionBase {
 		}
 
 		virtual Result<std::vector<uint8_t>>
-		step1_handle_hello(const uint8_t* /*client_msg*/, size_t /*len*/) {
+		step1_handle_hello(const uint8_t* /*client_msg*/, size_t /*len*/,
+						   sft_identity& /*identity*/) {
 			throw std::runtime_error("Invalid function call from base.");
 		}
 
 		virtual Result<std::vector<uint8_t>> step2_handle_response(
 			const uint8_t* /*server_msg*/, size_t /*len*/,
-			std::function<bool(const std::string&)> /*check_pubkey*/) {
+			std::function<bool(const std::string&)> /*check_pubkey*/,
+			sft_identity& /*identity*/) {
 			throw std::runtime_error("Invalid function call from base.");
 		}
 
@@ -540,17 +634,19 @@ class SessionBase {
 			throw std::runtime_error("Invalid function call from base.");
 		}
 
-		template <buffer_type T> auto step1_handle_hello(const T& client_msg) {
+		template <buffer_type T>
+		auto step1_handle_hello(const T& client_msg, sft_identity& identity) {
 			return this->step1_handle_hello(client_msg.data(),
-											client_msg.size());
+											client_msg.size(), identity);
 		}
 
 		template <buffer_type T>
 		auto step2_handle_response(
 			const T&                                server_msg,
-			std::function<bool(const std::string&)> check_pubkey) {
-			return this->step2_handle_response(server_msg.data(),
-											   server_msg.size(), check_pubkey);
+			std::function<bool(const std::string&)> check_pubkey,
+			sft_identity&                           identity) {
+			return this->step2_handle_response(
+				server_msg.data(), server_msg.size(), check_pubkey, identity);
 		}
 
 		template <buffer_type T>
@@ -575,18 +671,14 @@ class SessionBase {
 
 			unsigned long long clen;
 
-			{
-				ScopedReadAccess access(*tx_key_);
-
-				const auto&      aead = aead_descriptor();
-				if (aead.encrypt(output_pt, &clen, plaintext,
-								 static_cast<unsigned long long>(plaintextLen),
-								 nullptr,
-								 0,       // No AD
-								 nullptr, // No Secret Nonce
-								 nonce_tx_.data(), tx_key_->data()) != 0) {
-					return tl::unexpected("Encryption failed");
-				}
+			const auto&        aead = aead_descriptor();
+			if (aead.encrypt(output_pt, &clen, plaintext,
+							 static_cast<unsigned long long>(plaintextLen),
+							 nullptr,
+							 0,       // No AD
+							 nullptr, // No Secret Nonce
+							 nonce_tx_.data(), tx_key_->data()) != 0) {
+				return tl::unexpected("Encryption failed");
 			}
 
 			// Increment Nonce TX
@@ -636,17 +728,13 @@ class SessionBase {
 
 			unsigned long long mlen;
 
-			{
-				ScopedReadAccess access(*rx_key_);
-
-				const auto&      aead = aead_descriptor();
-				if ((aead.decrypt(
-						 output_pt, &mlen, nullptr, ciphertext,
-						 static_cast<unsigned long long>(ciphertextLen),
-						 nullptr, 0, nonce_rx_.data(), rx_key_->data()) != 0)) {
-					return tl::unexpected(
-						"Decryption failed: Tag mismatch (Tampering detected)");
-				}
+			const auto&        aead = aead_descriptor();
+			if ((aead.decrypt(output_pt, &mlen, nullptr, ciphertext,
+							  static_cast<unsigned long long>(ciphertextLen),
+							  nullptr, 0, nonce_rx_.data(),
+							  rx_key_->data()) != 0)) {
+				return tl::unexpected(
+					"Decryption failed: Tag mismatch (Tampering detected)");
 			}
 
 			sodium_increment(nonce_rx_.data(), encryption_nonce_bytes());
@@ -726,16 +814,12 @@ class SessionBase {
 			memset(nonce_rx_.data() + prefix_bytes, 0, sizeof(uint64_t));
 
 			uint8_t length_context[] = "SFT_LEN_";
-			{
-				ScopedReadAccess r_tx(*tx_key_);
-				ScopedReadAccess r_rx(*rx_key_);
-				crypto_generichash(tx_length_key_.data(), 32, tx_key_->data(),
-								   crypto_kx_SESSIONKEYBYTES, length_context,
-								   sizeof(length_context) - 1);
-				crypto_generichash(rx_length_key_.data(), 32, rx_key_->data(),
-								   crypto_kx_SESSIONKEYBYTES, length_context,
-								   sizeof(length_context) - 1);
-			}
+			crypto_generichash(tx_length_key_.data(), 32, tx_key_->data(),
+							   crypto_kx_SESSIONKEYBYTES, length_context,
+							   sizeof(length_context) - 1);
+			crypto_generichash(rx_length_key_.data(), 32, rx_key_->data(),
+							   crypto_kx_SESSIONKEYBYTES, length_context,
+							   sizeof(length_context) - 1);
 
 			length_counter_tx_ = 0;
 			length_counter_rx_ = 0;
@@ -787,28 +871,12 @@ class SessionBase {
 class ClientSession : public SessionBase {
 	public:
 		ClientSession(const PubKeyArray&      identity_pk,
-					  const SecKeyArray&      identity_sk,
 					  SecureAeadAlgorithmList supported_aead_algorithms =
 						  default_secure_aead_algorithms(),
 					  bool require_aead_negotiation = false)
 			: SessionBase(std::move(supported_aead_algorithms),
 						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
-			ScopedWriteAccess w(identity_sk_); // 解锁写入
-			std::memcpy(identity_sk_.data(), identity_sk.data(),
-						identity_sk.size());
-		}
-
-		ClientSession(const PubKeyArray&      identity_pk,
-					  const uint8_t*          identity_sk,
-					  SecureAeadAlgorithmList supported_aead_algorithms =
-						  default_secure_aead_algorithms(),
-					  bool require_aead_negotiation = false)
-			: SessionBase(std::move(supported_aead_algorithms),
-						  require_aead_negotiation) {
-			identity_pk_ = identity_pk;
-			ScopedWriteAccess w(identity_sk_); // 解锁写入
-			std::memcpy(identity_sk_.data(), identity_sk, identity_sk_.size());
 		}
 
 		// --- Step 1: 生成 Client Hello 数据包 ---
@@ -836,7 +904,8 @@ class ClientSession : public SessionBase {
 		// 输出: Client Auth Packet (已加密)
 		Result<std::vector<uint8_t>> step2_handle_response(
 			const uint8_t* server_msg, size_t len,
-			std::function<bool(const std::string&)> check_pubkey) override {
+			std::function<bool(const std::string&)> check_pubkey,
+			sft_identity&                           identity) override {
 			if (len < ServerToClientResponseLength) {
 				return tl::unexpected("Invalid server response size");
 			}
@@ -918,6 +987,8 @@ class ClientSession : public SessionBase {
 				}
 			}
 
+			tx_key_->unlock_for_read();
+			rx_key_->unlock_for_read();
 			// 销毁临时私钥 (PFS)
 			ephemeral_sk_.reset();
 
@@ -940,11 +1011,7 @@ class ClientSession : public SessionBase {
 			append_aead_transcript(sign_data);
 
 			std::vector<uint8_t> my_sig(crypto_sign_BYTES);
-			{
-				ScopedReadAccess r_id(identity_sk_);
-				crypto_sign_detached(my_sig.data(), NULL, sign_data.data(),
-									 sign_data.size(), identity_sk_.data());
-			}
+			identity.sign(my_sig, sign_data);
 			auth_payload.insert(auth_payload.end(), my_sig.begin(),
 								my_sig.end());
 
@@ -961,34 +1028,20 @@ class ServerSession : public SessionBase {
 
 	public:
 		ServerSession(const PubKeyArray&      identity_pk,
-					  const SecKeyArray&      identity_sk,
 					  SecureAeadAlgorithmList supported_aead_algorithms =
 						  default_secure_aead_algorithms(),
 					  bool require_aead_negotiation = false)
 			: SessionBase(std::move(supported_aead_algorithms),
 						  require_aead_negotiation) {
 			identity_pk_ = identity_pk;
-			ScopedWriteAccess w(identity_sk_); // 解锁写入
-			std::memcpy(identity_sk_.data(), identity_sk.data(),
-						identity_sk.size());
-		}
-		ServerSession(const PubKeyArray&      identity_pk,
-					  const uint8_t*          identity_sk,
-					  SecureAeadAlgorithmList supported_aead_algorithms =
-						  default_secure_aead_algorithms(),
-					  bool require_aead_negotiation = false)
-			: SessionBase(std::move(supported_aead_algorithms),
-						  require_aead_negotiation) {
-			identity_pk_ = identity_pk;
-			ScopedWriteAccess w(identity_sk_); // 解锁写入
-			std::memcpy(identity_sk_.data(), identity_sk, identity_sk_.size());
 		}
 
 		// --- Step 1: 处理 Client Hello ---
 		// 输入: Client Ephemeral PK
 		// 输出: Server Response Packet
 		Result<std::vector<uint8_t>>
-		step1_handle_hello(const uint8_t* client_msg, size_t len) override {
+		step1_handle_hello(const uint8_t* client_msg, size_t len,
+						   sft_identity& identity) override {
 			if (len < crypto_kx_PUBLICKEYBYTES) {
 				return tl::unexpected("Invalid client hello size");
 			}
@@ -1051,6 +1104,8 @@ class ServerSession : public SessionBase {
 					return tl::unexpected("Server key exchange failed");
 				}
 			}
+			tx_key_->unlock_for_read();
+			rx_key_->unlock_for_read();
 			ephemeral_sk_.reset(); // 销毁临时私钥
 
 			// 3. 构造回复包
@@ -1070,11 +1125,7 @@ class ServerSession : public SessionBase {
 			append_aead_transcript(sign_data);
 
 			std::vector<uint8_t> sig(crypto_sign_BYTES);
-			{
-				ScopedReadAccess r_id(identity_sk_);
-				crypto_sign_detached(sig.data(), nullptr, sign_data.data(),
-									 sign_data.size(), identity_sk_.data());
-			}
+			identity.sign(sig, sign_data);
 			response.insert(response.end(), sig.begin(), sig.end());
 			response.insert(response.end(), server_aead_extension_.begin(),
 							server_aead_extension_.end());

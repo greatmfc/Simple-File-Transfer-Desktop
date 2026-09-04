@@ -30,13 +30,15 @@ using namespace kotcpp;
 extern string info;
 
 struct sft_config {
-		SftMode        mode        = SftMode::Interactive;
-		SftProtocol    protocol    = SftProtocol::V13;
-		string         target_addr = "";
+		SftMode        mode     = SftMode::Interactive;
+		SftProtocol    protocol = SftProtocol::V13;
+		string         target_addr;
 		vector<string> file_list;
-		bool           is_one_time     = false;
-		bool           use_random_port = false;
-		size_t         max_workers     = 0;
+		bool           is_one_time      = false;
+		bool           use_random_port  = false;
+		size_t         max_workers      = 0;
+		bool           is_export_pubkey = false;
+		string         output_path;
 };
 
 void print_help() {
@@ -49,10 +51,14 @@ void print_help() {
 		"  -t, --transfer [FILES...] Enable transfer mode for one-time task.\n"
 		"  -p, --pull [FILES...]     Enable pull mode: wait for receiver to connect or actively connect to sender to pull files. It must be combined with either -r or -t.\n"
 		"  -a, --addr <ip:port>      Directly connect to specified address (skips discovery).\n"
+		"  -o, --output <path>       Specify output path for received files.\n"
 		"  --protocol <1.1|1.2|1.3>  Select transfer protocol. Default is 1.3.\n"
 		"  --parallel                Use sft1.3 parallel transfer.\n"
 		"  --workers <N>             Limit sft1.3 worker connections. Default is min(local threads, payload files).\n"
 		"  --legacy                  Use the legacy sft1.1 transfer protocol.\n"
+		"  --export-key              Export the public key to stdin.\n"
+		"  --reset-key               Reset the key pair.\n"
+		"  --random-port             Enable random port for incoming connections.\n"
 		"\n"
 		"Interactive Mode: Run without -r, -t or -p to enter interactive menu.\n"
 		"Examples: \n"
@@ -134,6 +140,22 @@ sft_config parse_args(const std::vector<std::string>& argv) {
 		}
 		else if (argv[i] == "--legacy") {
 			config.protocol = SftProtocol::V11;
+		}
+		else if (argv[i] == "--export-key") {
+			config.mode        = SftMode::ExportPubKey;
+			config.is_one_time = true;
+		}
+		else if (argv[i] == "--reset-key") {
+			config.mode        = SftMode::ResetKeyPair;
+			config.is_one_time = true;
+		}
+		else if (argv[i] == "-o" || argv[i] == "--output") {
+			if (i + 1 < argv.size()) {
+				config.output_path = argv[++i];
+			}
+		}
+		else if (argv[i] == "--random-port") {
+			config.use_random_port = true;
 		}
 		else if (config.mode == SftMode::Interactive) {
 			// If no mode set yet, assume transfer mode for drag-and-drop or
@@ -223,7 +245,8 @@ bool execute_transfer_task(udp_socket& usocket, sft_client& sender,
 void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 						  bool use_random_port, const string& sec_path,
 						  const string& pub_path, const string& hosts_path,
-						  size_t max_workers) {
+						  size_t             max_workers,
+						  const std::string* output_path = nullptr) {
 	while (true) {
 		auto res = sft_common::wait_for_connection(usocket, receiver,
 												   use_random_port, 15);
@@ -241,7 +264,7 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 		options.pub_path    = pub_path;
 		options.hosts_path  = hosts_path;
 		options.max_workers = max_workers;
-		receive_file(receiver, options);
+		receive_file(receiver, options, output_path);
 		break; // Exit after one successful receive in one-time mode
 	}
 }
@@ -251,7 +274,8 @@ void execute_receive_task(udp_socket& usocket, sft_server& receiver,
 void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
 								const string& target_addr,
 								const string& sec_path, const string& pub_path,
-								const string& hosts_path, size_t max_workers) {
+								const string& hosts_path, size_t max_workers,
+								const std::string* output_path = nullptr) {
 	auto connect_res = sft_common::establish_connection(usocket, target_addr);
 	if (!connect_res) {
 		return;
@@ -270,7 +294,7 @@ void execute_receiver_pull_task(udp_socket& usocket, sft_client& receiver,
 	options.pub_path        = pub_path;
 	options.hosts_path      = hosts_path;
 	options.max_workers     = max_workers;
-	return receive_file(receiver, options);
+	return receive_file(receiver, options, output_path);
 }
 
 void execute_sender_pull_task(udp_socket& usocket, sft_server& sender,
@@ -368,9 +392,11 @@ int main(int argc, char* argv[]) {
 			sft_server receiver;
 			if (receiver.initialize(sec_path.string(), pub_path.string(),
 									hosts_path.string())) {
-				execute_receive_task(usocket, receiver, config.use_random_port,
-									 sec_path.string(), pub_path.string(),
-									 hosts_path.string(), config.max_workers);
+				execute_receive_task(
+					usocket, receiver, config.use_random_port,
+					sec_path.string(), pub_path.string(), hosts_path.string(),
+					config.max_workers,
+					config.output_path.empty() ? nullptr : &config.output_path);
 			}
 		}
 		else if (mode == SftMode::TransferFiles ||
@@ -423,7 +449,33 @@ int main(int argc, char* argv[]) {
 									hosts_path.string())) {
 				execute_receiver_pull_task(
 					usocket, receiver, config.target_addr, sec_path.string(),
-					pub_path.string(), hosts_path.string(), config.max_workers);
+					pub_path.string(), hosts_path.string(), config.max_workers,
+					config.output_path.empty() ? nullptr : &config.output_path);
+			}
+		}
+		else if (mode == SftMode::ExportPubKey) {
+			sft_identity temp_identity;
+			if (temp_identity.initialize(sec_path.string(),
+										 pub_path.string())) {
+				string pubkey_str = temp_identity.fingerprint();
+				std::cout << "Your public key (hex): " << pubkey_str << "\n";
+			}
+			else {
+				std::cerr << "Failed to initialize client for exporting public "
+							 "key.\n";
+			}
+		}
+		else if (mode == SftMode::ResetKeyPair) {
+			std::error_code ec;
+			std::filesystem::remove(sec_path, ec);
+			if (ec) {
+				std::cerr << "Failed to remove secret key: " << ec.message()
+						  << "\n";
+			}
+			std::filesystem::remove(pub_path, ec);
+			if (ec) {
+				std::cerr << "Failed to remove public key: " << ec.message()
+						  << "\n";
 			}
 		}
 

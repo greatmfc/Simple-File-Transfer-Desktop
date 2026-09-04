@@ -29,19 +29,25 @@ namespace sft_detail {
 struct parallel_transfer_options;
 }
 
-enum class SftMode {
-	Interactive      = -1, // 交互模式
-	Receive          = 0,  // 传统接收模式
-	TransferFiles    = 1,  // 传输文件
-	TransferFolders  = 2,  // 传输文件夹
-	ToggleRandomPort = 3,  // 切换随机端口选项
-	PullSend         = 4,  // Pull模式：作为发送方等待连接
-	PullReceive      = 5   // Pull模式：作为接收方主动连接
+enum class SftMode : int8_t {
+	Interactive      = -1, // Interactive mode
+	Receive          = 0,  // Traditional receive mode
+	TransferFiles    = 1,  // Transfer files
+	TransferFolders  = 2,  // Transfer folders
+	ToggleRandomPort = 3,  // Toggle random port option
+	PullSend         = 4,  // Pull mode: wait for connection as sender
+	PullReceive      = 5,  // Pull mode: actively connect as receiver
+	ExportPubKey     = 6,  // Export public key
+	ResetKeyPair     = 7,  // Reset key pair
 };
 
 #ifndef SFT_PROTOCOL_ENUM_DEFINED
 #define SFT_PROTOCOL_ENUM_DEFINED
-enum class SftProtocol { V11, V12, V13 };
+enum class SftProtocol : uint8_t {
+	V11,
+	V12,
+	V13,
+};
 #endif
 
 using std::tuple;
@@ -59,31 +65,26 @@ ResType wait_for_peers_to_connect(const kotcpp::udp_socket& local_udp_host,
 								  bool use_random_port = false);
 
 template <kotcpp::AsyncTransferTarget Target>
-bool                                               send_file(
-												   Target& target,
-												   const vector<tuple<std::unique_ptr<File>, string>>& files,
-												   SftProtocol protocol);
+bool send_file(Target&                                             target,
+			   const vector<tuple<std::unique_ptr<File>, string>>& files,
+			   SftProtocol                                         protocol);
 
 template <kotcpp::AsyncTransferTarget Target>
-bool                                               send_file_v11(
-												   Target& target,
-												   const vector<tuple<std::unique_ptr<File>, string>>& files);
+bool send_file_v11(Target&                                             target,
+				   const vector<tuple<std::unique_ptr<File>, string>>& files);
 
 template <kotcpp::AsyncTransferTarget Target>
-bool                                               send_file_v12(
-												   Target& target,
-												   const vector<string>& files);
+bool send_file_v12(Target& target, const vector<string>& files);
 
 template <kotcpp::AsyncTransferTarget Target>
-bool                                               send_file_v13_parallel(
-												   Target& target,
-												   const vector<string>& files,
-												   const sft_detail::parallel_transfer_options& options);
+bool send_file_v13_parallel(
+	Target& target, const vector<string>& files,
+	const sft_detail::parallel_transfer_options& options);
 
 template <kotcpp::AsyncTransferTarget Target>
-void                                               receive_file(
-												   Target& target,
-												   const sft_detail::parallel_transfer_options& options);
+void                                               receive_file(Target&                                      target,
+																const sft_detail::parallel_transfer_options& options,
+																const std::string* output_path = nullptr);
 
 template <kotcpp::AsyncTransferTarget Target> void receive_file(Target& target);
 

@@ -579,7 +579,6 @@ bool receive_control_code(Target& target, char expected_code) {
 	return true;
 }
 
-template <bool IsSFT11 = false>
 inline kotcpp::Result<std::filesystem::path>
 resolve_output_path(const std::filesystem::path& output_root,
 					std::string_view             remote_path) {
@@ -590,11 +589,9 @@ resolve_output_path(const std::filesystem::path& output_root,
 
 	std::string normalized_path(remote_path);
 #ifdef __unix__
-	if constexpr (IsSFT11) {
-		for (auto& c : normalized_path) {
-			if (c == '\\') {
-				c = '/';
-			}
+	for (auto& c : normalized_path) {
+		if (c == '\\') {
+			c = '/';
 		}
 	}
 #endif
